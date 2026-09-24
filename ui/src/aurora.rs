@@ -2,31 +2,24 @@
 //! time and lean toward the mouse pointer. The same shader runs on Metal,
 //! Vulkan and DirectX 12.
 
-use std::{
-    cell::Cell,
-    rc::Rc,
-    sync::{Arc, OnceLock},
-};
+use std::{cell::Cell, rc::Rc};
 
 use cranpose::{
     Alignment, Box, BoxSpec, Color, GraphicsLayer, Modifier, MutableState, Point, PointerEventKind,
     PointerInputScope, composable, current_density, remember, rememberMutableStateOf,
 };
 use cranpose_animation::{AnimationSpec, RepeatMode, StartOffset, infiniteRepeatable};
-use cranpose_ui_graphics::{
-    CompositingStrategy, RUNTIME_SHADER_PRELUDE_WGSL, RenderEffect, RuntimeShader,
-};
+use cranpose_ui_graphics::{CompositingStrategy, RenderEffect};
+
+use crate::shader::ShaderSource;
 
 /// How long one full cycle of the animation takes.
 pub const CYCLE_MILLIS: u64 = 24_000;
 
 const CORNER_RADIUS: f32 = 14.0;
 
-const AURORA_WGSL: &str = r"
-fn get_float(index: u32) -> f32 {
-    return u[index / 4u][index % 4u];
-}
-
+pub(crate) static AURORA_SHADER: ShaderSource = ShaderSource::new(
+    r"
 fn band(p: vec2<f32>, pointer: vec2<f32>, lean: f32, t: f32, layer: f32) -> f32 {
     let tau = 6.28318530718;
     let crest = 0.52
@@ -40,10 +33,8 @@ fn band(p: vec2<f32>, pointer: vec2<f32>, lean: f32, t: f32, layer: f32) -> f32 
 
 @fragment
 fn effect_fs(input: VertexOutput) -> @location(0) vec4<f32> {
-    let texture_size = vec2<f32>(textureDimensions(input_texture));
-    let effect_rect = vec4<f32>(get_float(248u), get_float(249u), get_float(250u), get_float(251u));
-    let size = max(effect_rect.zw, vec2<f32>(1.0));
-    let local = input.uv * texture_size - effect_rect.xy;
+    let size = effect_size();
+    let local = effect_local(input.uv);
     let p = local / size;
 
     let t = get_float(0u);
@@ -70,14 +61,8 @@ fn effect_fs(input: VertexOutput) -> @location(0) vec4<f32> {
     let rgb = content.rgb + color * (1.0 - content.a);
     return vec4<f32>(rgb * coverage, coverage);
 }
-";
-
-fn aurora_source() -> Arc<str> {
-    static SOURCE: OnceLock<Arc<str>> = OnceLock::new();
-    SOURCE
-        .get_or_init(|| Arc::from(format!("{RUNTIME_SHADER_PRELUDE_WGSL}{AURORA_WGSL}")))
-        .clone()
-}
+",
+);
 
 /// What the aurora shader is drawn with.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,7 +77,7 @@ pub struct AuroraParams {
 /// The aurora effect for `params`: uniforms 0 phase, 1–2 pointer, 3 density,
 /// 4 lean, 5 corner radius, 8–10 accent, 11 dark.
 pub fn aurora_effect(params: &AuroraParams) -> RenderEffect {
-    let mut shader = RuntimeShader::from_shared_source(aurora_source());
+    let mut shader = AURORA_SHADER.shader();
     shader.set_float(0, params.phase);
     shader.set_float2(1, params.pointer.x, params.pointer.y);
     shader.set_float(3, current_density());

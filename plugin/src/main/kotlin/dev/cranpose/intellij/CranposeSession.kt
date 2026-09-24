@@ -19,9 +19,12 @@ import kotlin.concurrent.thread
 interface CranposeListener {
     fun onFrame(frame: AppEvent.Frame)
 
-    fun onCursor(name: String) {}
+    fun onCursor(surface: Int, name: String) {}
 
     fun onMessage(channel: String, payload: String) {}
+
+    /** The process opened, closed, or started moving or resizing one of its surfaces. */
+    fun onCommand(command: SurfaceCommand) {}
 
     /** The process went away: closed by the host, exited, or crashed with [error]. */
     fun onExit(error: Throwable?) {}
@@ -49,8 +52,9 @@ class CranposeSession private constructor(
                 while (true) {
                     when (val event = reader.next() ?: break) {
                         is AppEvent.Frame -> listener.onFrame(event)
-                        is AppEvent.Cursor -> listener.onCursor(event.name)
+                        is AppEvent.Cursor -> listener.onCursor(event.surface, event.name)
                         is AppEvent.Message -> listener.onMessage(event.channel, event.payload)
+                        is SurfaceCommand -> listener.onCommand(event)
                         is AppEvent.Hello -> Unit
                     }
                 }

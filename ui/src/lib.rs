@@ -5,7 +5,10 @@
 //! with the plugin's `IdeBridge.kt`.
 
 pub mod aurora;
+pub mod effects;
 pub mod ide;
+pub mod orb;
+pub mod shader;
 pub mod tool_window;
 
 pub use tool_window::ToolWindow;

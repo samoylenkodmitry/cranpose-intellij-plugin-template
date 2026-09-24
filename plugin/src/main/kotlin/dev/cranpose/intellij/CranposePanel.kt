@@ -4,54 +4,83 @@ import java.awt.Color
 import java.awt.Cursor
 import java.awt.Graphics
 import java.awt.Graphics2D
-import java.awt.RenderingHints
-import java.awt.event.ComponentAdapter
-import java.awt.event.ComponentEvent
-import java.awt.event.HierarchyEvent
-import java.awt.event.KeyEvent
-import java.awt.event.KeyListener
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
-import java.awt.event.MouseWheelEvent
-import java.awt.geom.AffineTransform
-import java.awt.image.BufferedImage
-import java.awt.image.DataBufferInt
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import java.awt.Point
 import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import javax.swing.JComponent
 import javax.swing.SwingUtilities
-import kotlin.math.ceil
-import kotlin.math.floor
 
 /**
  * A Swing component that shows a Cranpose process and forwards input to it.
  *
  * [command] starts the process; [start] launches it off the UI thread and
- * [close] stops it. The component knows nothing about IntelliJ: an IDE layer
- * sets [onConnected] and [onAppMessage] and calls [send] and [setTheme].
+ * [close] stops it. The panel is the process's primary surface; the windows
+ * the process opens become [SurfaceWindow]s, and its overlays are handed to
+ * the IDE layer to place. The component knows nothing about IntelliJ: an IDE
+ * layer sets the `on…` callbacks and calls [send] and [setTheme].
  */
 class CranposePanel(
     private val command: () -> List<String>,
     private val workingDirectory: Path? = null,
     private val log: (String) -> Unit = {},
-) : JComponent(), CranposeListener, AutoCloseable {
+) : SurfaceView(CranposeProtocol.PRIMARY_SURFACE, SessionLink()), AutoCloseable {
     /** Called on the UI thread each time a process has connected. */
     var onConnected: () -> Unit = {}
 
     /** Called on the session's reader thread for every message the process sends. */
     var onAppMessage: (channel: String, payload: String) -> Unit = { _, _ -> }
 
+    /** Called on the UI thread when the process opens an overlay; the IDE layer places it. */
+    var onOverlayOpened: (SurfaceOverlay) -> Unit = {}
+
+    /** Called on the UI thread when an overlay closes, after it left its parent. */
+    var onOverlayClosed: (SurfaceOverlay) -> Unit = {}
+
     private val launcher = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "cranpose-panel-launcher").apply { isDaemon = true }
     }
-    private val frameLock = Any()
-    private var image: BufferedImage? = null
-    private var imageScale = 1.0
+    private val input = SurfaceInput(this)
+
+    /** The process's other surfaces. Their canvases exist from the command on, their Swing parts once built. */
+    private val secondary = ConcurrentHashMap<Int, Secondary>()
+
+    private class Secondary(val canvas: FrameCanvas) {
+        @Volatile
+        var view: SurfaceView? = null
+        var input: SurfaceInput? = null
+        var window: SurfaceWindow? = null
+    }
+
+    /** Delivers one process's events; it goes stale when the panel stops or replaces that process. */
+    private inner class Connection : CranposeListener {
+        @Volatile
+        var live = true
+
+        override fun onFrame(frame: AppEvent.Frame) {
+            if (live) showFrame(frame)
+        }
+
+        override fun onCursor(surface: Int, name: String) {
+            if (live) showCursor(surface, name)
+        }
+
+        override fun onMessage(channel: String, payload: String) {
+            if (live) onAppMessage(channel, payload)
+        }
+
+        override fun onCommand(command: SurfaceCommand) {
+            if (live) handle(command)
+        }
+
+        override fun onExit(error: Throwable?) {
+            if (live) exited(error)
+        }
+    }
 
     @Volatile
     private var session: CranposeSession? = null
+
+    private var connection: Connection? = null
 
     @Volatile
     private var status: String = "Starting Cranpose…"
@@ -59,11 +88,7 @@ class CranposePanel(
     @Volatile
     private var starting = false
 
-    @Volatile
-    private var sentScale = 1.0
-
     private var dark = true
-    private var pressed = false
 
     init {
         isFocusable = true
@@ -71,15 +96,11 @@ class CranposePanel(
         isOpaque = true
         background = Color(0x2B2D30)
         foreground = Color(0x868A91)
-        installInput()
-        addComponentListener(object : ComponentAdapter() {
-            override fun componentResized(event: ComponentEvent) = sendSize()
-        })
-        addPropertyChangeListener("graphicsConfiguration") { sendSize() }
-        addHierarchyListener { event ->
-            if (event.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) {
-                session?.host?.visibility(isShowing)
-            }
+        input.onPress = {
+            requestFocusInWindow()
+            val connected = session != null
+            if (!connected) start()
+            connected
         }
     }
 
@@ -88,17 +109,19 @@ class CranposePanel(
         if (starting || launcher.isShutdown) return
         starting = true
         launcher.execute {
-            session?.close()
-            session = null
+            stopSession()
             status = "Starting Cranpose…"
             repaint()
             try {
-                val started = CranposeSession.start(command(), workingDirectory, this, log)
+                val listener = Connection()
+                val started = CranposeSession.start(command(), workingDirectory, listener, log)
+                connection = listener
                 session = started
+                link.host = started.host
                 started.host.theme(dark)
                 SwingUtilities.invokeLater {
                     sendSize()
-                    started.host.visibility(isShowing)
+                    sendVisibility()
                     onConnected()
                 }
             } catch (error: Exception) {
@@ -113,58 +136,65 @@ class CranposePanel(
 
     /** Sends [payload] on [channel] to the process; dropped while none is connected. */
     fun send(channel: String, payload: String) {
-        session?.host?.message(channel, payload)
+        link.host?.message(channel, payload)
     }
 
     /** Tells the process whether the IDE uses a dark theme. */
     fun setTheme(dark: Boolean) {
         this.dark = dark
-        session?.host?.theme(dark)
+        link.host?.theme(dark)
     }
 
     override fun close() {
         if (launcher.isShutdown) return
-        launcher.execute {
-            session?.close()
-            session = null
-        }
+        launcher.execute(::stopSession)
         launcher.shutdown()
     }
 
-    override fun onFrame(frame: AppEvent.Frame) {
-        synchronized(frameLock) {
-            val target = image?.takeIf { it.width == frame.bufferWidth && it.height == frame.bufferHeight }
-                ?: BufferedImage(frame.bufferWidth, frame.bufferHeight, BufferedImage.TYPE_INT_ARGB_PRE).also {
-                    image = it
-                    imageScale = sentScale
-                }
-            val destination = (target.raster.dataBuffer as DataBufferInt).data
-            val source = ByteBuffer.wrap(frame.pixels).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer()
-            for (row in 0 until frame.height) {
-                source.position(row * frame.width)
-                source.get(destination, (frame.y + row) * target.width + frame.x, frame.width)
+    private fun showFrame(frame: AppEvent.Frame) {
+        if (frame.surface == surface) {
+            repaint(canvas.apply(frame))
+        } else {
+            secondary[frame.surface]?.let { target ->
+                val changed = target.canvas.apply(frame)
+                target.view?.repaint(changed)
             }
         }
-        session?.host?.frameAck(frame.frameId)
-        val scale = imageScale
-        repaint(
-            floor(frame.x / scale).toInt(),
-            floor(frame.y / scale).toInt(),
-            ceil(frame.width / scale).toInt() + 1,
-            ceil(frame.height / scale).toInt() + 1,
-        )
+        link.host?.frameAck(frame.surface, frame.frameId)
     }
 
-    override fun onCursor(name: String) {
-        SwingUtilities.invokeLater { cursor = Cursor.getPredefinedCursor(cursorType(name)) }
+    private fun showCursor(surface: Int, name: String) {
+        SwingUtilities.invokeLater {
+            val target = if (surface == this.surface) this else secondary[surface]?.view
+            target?.cursor = Cursor.getPredefinedCursor(cursorType(name))
+        }
     }
 
-    override fun onMessage(channel: String, payload: String) = onAppMessage(channel, payload)
+    private fun handle(command: SurfaceCommand) {
+        when (command) {
+            is SurfaceCommand.OpenWindow -> {
+                secondary.computeIfAbsent(command.surface) { Secondary(FrameCanvas(canvas.scale)) }
+                SwingUtilities.invokeLater { openWindow(command.spec) }
+            }
+            is SurfaceCommand.OpenOverlay -> {
+                secondary.computeIfAbsent(command.surface) { Secondary(FrameCanvas(canvas.scale)) }
+                SwingUtilities.invokeLater { openOverlay(command.surface, command.anchor) }
+            }
+            is SurfaceCommand.Close -> secondary.remove(command.surface)?.let { closed ->
+                SwingUtilities.invokeLater { dismiss(closed) }
+            }
+            is SurfaceCommand.BeginMove -> SwingUtilities.invokeLater { secondary[command.surface]?.input?.begin(null) }
+            is SurfaceCommand.BeginResize -> SwingUtilities.invokeLater {
+                secondary[command.surface]?.input?.begin(command.edge)
+            }
+        }
+    }
 
-    override fun onExit(error: Throwable?) {
+    private fun exited(error: Throwable?) {
+        closeSurfaces()
         if (error != null) {
             status = "Cranpose stopped: ${error.message}. Click to restart."
-            synchronized(frameLock) { image = null }
+            canvas.clear()
             repaint()
         }
     }
@@ -173,99 +203,58 @@ class CranposePanel(
         val g = graphics as Graphics2D
         g.color = background
         g.fillRect(0, 0, width, height)
-        synchronized(frameLock) {
-            val shown = image
-            if (shown == null) {
-                g.color = foreground
-                g.drawString(status, 12, 24)
-                return
-            }
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR)
-            g.drawImage(shown, AffineTransform.getScaleInstance(1 / imageScale, 1 / imageScale), null)
+        if (!canvas.paint(g)) {
+            g.color = foreground
+            g.drawString(status, 12, 24)
         }
     }
 
-    private val requestedScale: Double
-        get() = graphicsConfiguration?.defaultTransform?.scaleX ?: 1.0
-
-    private fun sendSize() {
-        val host = session?.host ?: return
-        if (width <= 0 || height <= 0) return
-        val scale = requestedScale
-        sentScale = scale
-        val refresh = graphicsConfiguration?.device?.displayMode?.refreshRate?.takeIf { it > 0 } ?: 60
-        host.resize(ceil(width * scale).toInt(), ceil(height * scale).toInt(), scale.toFloat(), refresh.toFloat())
+    private fun stopSession() {
+        connection?.live = false
+        connection = null
+        link.host = null
+        session?.close()
+        session = null
+        closeSurfaces()
     }
 
-    private fun installInput() {
-        val mouse = object : MouseAdapter() {
-            override fun mousePressed(event: MouseEvent) {
-                requestFocusInWindow()
-                if (session == null) {
-                    start()
-                    return
-                }
-                if (SwingUtilities.isLeftMouseButton(event)) {
-                    pressed = true
-                    session?.host?.pointerDown(event.x.toFloat(), event.y.toFloat())
-                }
-            }
-
-            override fun mouseReleased(event: MouseEvent) {
-                if (SwingUtilities.isLeftMouseButton(event) && pressed) {
-                    pressed = false
-                    session?.host?.pointerUp(event.x.toFloat(), event.y.toFloat())
-                }
-            }
-
-            override fun mouseMoved(event: MouseEvent) {
-                session?.host?.pointerMove(event.x.toFloat(), event.y.toFloat())
-            }
-
-            override fun mouseDragged(event: MouseEvent) = mouseMoved(event)
-
-            override fun mouseExited(event: MouseEvent) {
-                if (!pressed) session?.host?.pointerLeave()
-            }
-
-            override fun mouseWheelMoved(event: MouseWheelEvent) {
-                val delta = -event.preciseWheelRotation.toFloat() * LINE_PIXELS
-                val horizontal = event.isShiftDown
-                session?.host?.scroll(
-                    event.x.toFloat(),
-                    event.y.toFloat(),
-                    if (horizontal) delta else 0f,
-                    if (horizontal) 0f else delta,
-                    KeyCodes.modifiers(event.modifiersEx),
-                )
-            }
+    private fun openWindow(spec: WindowSpec) {
+        val target = secondary[spec.surface] ?: return
+        target.window?.let {
+            it.update(spec)
+            return
         }
-        addMouseListener(mouse)
-        addMouseMotionListener(mouse)
-        addMouseWheelListener(mouse)
-        addKeyListener(object : KeyListener {
-            override fun keyPressed(event: KeyEvent) = key(event, down = true)
-
-            override fun keyReleased(event: KeyEvent) = key(event, down = false)
-
-            override fun keyTyped(event: KeyEvent) {
-                if (KeyCodes.insertsText(event.keyChar, event.modifiersEx)) {
-                    session?.host?.text(event.keyChar.toString())
-                    event.consume()
-                }
-            }
-        })
+        val view = SurfaceView(spec.surface, link, target.canvas).apply { isFocusable = true }
+        target.input = SurfaceInput(view)
+        target.view = view
+        target.window = SurfaceWindow(SwingUtilities.getWindowAncestor(this), spec, view, ::hostOrigin)
     }
 
-    private fun key(event: KeyEvent, down: Boolean) {
-        val code = KeyCodes.domCode(event.keyCode, event.keyLocation) ?: return
-        session?.host?.key(down, KeyCodes.modifiers(event.modifiersEx), code)
-        event.consume()
+    private fun openOverlay(surface: Int, anchor: String) {
+        val target = secondary[surface] ?: return
+        if (target.view != null) return
+        val overlay = SurfaceOverlay(anchor, surface, link, target.canvas)
+        target.view = overlay
+        onOverlayOpened(overlay)
     }
+
+    private fun dismiss(closed: Secondary) {
+        closed.window?.close()
+        (closed.view as? SurfaceOverlay)?.let { overlay ->
+            overlay.removeFromParent()
+            onOverlayClosed(overlay)
+        }
+    }
+
+    private fun closeSurfaces() {
+        val closed = secondary.values.toList()
+        secondary.clear()
+        if (closed.isNotEmpty()) SwingUtilities.invokeLater { closed.forEach(::dismiss) }
+    }
+
+    private fun hostOrigin(): Point? = if (isShowing) locationOnScreen else null
 
     companion object {
-        private const val LINE_PIXELS = 40f
-
         /** The AWT cursor closest to a CSS cursor name. */
         fun cursorType(name: String): Int = when (name) {
             "pointer", "grab", "grabbing" -> Cursor.HAND_CURSOR
