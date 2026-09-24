@@ -21,8 +21,3 @@ strip = true
 panic = "abort"
 
 
-[patch.crates-io]
-cranpose = { git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49918cca3e4c0e5482ba22c8f05219d0dd451a4" }
-cranpose-animation = { git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49918cca3e4c0e5482ba22c8f05219d0dd451a4" }
-cranpose-core = { git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49918cca3e4c0e5482ba22c8f05219d0dd451a4" }
-cranpose-ui-graphics = { git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49918cca3e4c0e5482ba22c8f05219d0dd451a4" }
