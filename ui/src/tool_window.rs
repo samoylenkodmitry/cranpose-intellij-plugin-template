@@ -1,5 +1,6 @@
-//! The tool window: a shader card, the IDE's focused file with a history of
-//! recent ones, and controls that talk back to the IDE.
+//! The tool window: a shader card, shader effects outside the tool window
+//! (on the editor and in a floating window), the IDE's focused file with a
+//! history of recent ones, and controls that talk back to the IDE.
 
 use cranpose::{
     BasicTextField, Box, BoxSpec, Brush, Button, ButtonSpec, Color, Column, ColumnSpec,
@@ -12,7 +13,9 @@ use cranpose_core::CollectEvents;
 
 use crate::{
     aurora::AuroraCard,
+    effects::{EditorEffects, EffectStyle, EffectsPlayground},
     ide::{EDITOR_CHANNEL, EditorFile, Palette, notify_ide, open_in_ide, rememberPalette},
+    orb::FloatingOrb,
 };
 
 /// How many files the history keeps.
@@ -40,6 +43,9 @@ pub fn ToolWindow() {
     let scroll = remember(|| ScrollState::new(0.0)).with(|state| *state);
     let animate = rememberMutableStateOf(|| true);
     let clicks = rememberMutableStateOf(|| 0u32);
+    let orb = rememberMutableStateOf(|| false);
+    let editor_effects = rememberMutableStateOf(|| true);
+    let style = rememberMutableStateOf(|| EffectStyle::Sparks);
     let current = rememberMutableStateOf(|| None::<EditorFile>);
     let recent = rememberMutableStateOf(Vec::<EditorFile>::new);
     let draft = remember(|| TextFieldState::new("")).with(|state| *state);
@@ -93,6 +99,7 @@ pub fn ToolWindow() {
                     );
                 },
             );
+            EffectsCard(palette, orb, editor_effects, style);
             EditorCard(palette, current, recent);
             MessageCard(palette, draft);
         },
@@ -127,6 +134,79 @@ fn Card(palette: Palette, title: &'static str, content: impl FnMut() + 'static) 
         move || {
             Text(title, Modifier::empty(), caption(palette.muted));
             content();
+        },
+    );
+}
+
+#[composable]
+fn EffectsCard(
+    palette: Palette,
+    orb: MutableState<bool>,
+    editor_effects: MutableState<bool>,
+    style: MutableState<EffectStyle>,
+) {
+    Card(palette, "SHADER EFFECTS", move || {
+        Row(
+            Modifier::empty().fill_max_width(),
+            RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+            move || {
+                let orb_label = if orb.get() {
+                    "Hide the orb"
+                } else {
+                    "Floating orb"
+                };
+                Action(palette, orb_label, move || orb.set(!orb.get()));
+                let effects_label = if editor_effects.get() {
+                    "Editor effects: on"
+                } else {
+                    "Editor effects: off"
+                };
+                Action(palette, effects_label, move || {
+                    editor_effects.set(!editor_effects.get());
+                });
+            },
+        );
+        Row(
+            Modifier::empty().fill_max_width(),
+            RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(6.0)),
+            move || {
+                for choice in EffectStyle::ALL {
+                    StyleChip(palette, choice, style);
+                }
+            },
+        );
+        Text(
+            "Type, delete or jump around in the editor, or click below. Drag the orb; click it to recolor.",
+            Modifier::empty(),
+            caption(palette.muted),
+        );
+        EffectsPlayground(110.0, palette.background, palette.accent, style);
+        if orb.get() {
+            FloatingOrb();
+        }
+        if editor_effects.get() {
+            EditorEffects(palette.accent, style);
+        }
+    });
+}
+
+#[composable]
+fn StyleChip(palette: Palette, choice: EffectStyle, style: MutableState<EffectStyle>) {
+    let selected = style.get() == choice;
+    let (fill, ink) = if selected {
+        (palette.accent, palette.on_accent)
+    } else {
+        (palette.background, palette.text)
+    };
+    Box(
+        Modifier::empty()
+            .background(fill)
+            .rounded_corners(12.0)
+            .padding_symmetric(10.0, 4.0)
+            .clickable(move |_| style.set(choice)),
+        BoxSpec::default(),
+        move || {
+            Text(choice.label(), Modifier::empty(), caption(ink));
         },
     );
 }
