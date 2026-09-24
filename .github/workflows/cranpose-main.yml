@@ -1,0 +1,36 @@
+name: Cranpose main
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests against Cranpose main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Resolve Cranpose from its main branch
+        run: |
+          cat >> Cargo.toml <<'PATCH'
+
+          [patch.crates-io]
+          cranpose = { git = "https://github.com/samoylenkodmitry/Cranpose", branch = "main" }
+          cranpose-animation = { git = "https://github.com/samoylenkodmitry/Cranpose", branch = "main" }
+          cranpose-core = { git = "https://github.com/samoylenkodmitry/Cranpose", branch = "main" }
+          cranpose-ui-graphics = { git = "https://github.com/samoylenkodmitry/Cranpose", branch = "main" }
+          PATCH
+      - name: Rust tests
+        run: cargo test -p cranpose-intellij-ui
+      - name: Plugin tests, including the end-to-end test against the real UI
+        working-directory: plugin
+        run: ./gradlew test

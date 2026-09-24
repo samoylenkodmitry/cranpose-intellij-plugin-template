@@ -1,0 +1,30 @@
+[package]
+name = "cranpose-intellij-ui"
+description = "The tool window UI: runs inside the IDE, or on its own as a desktop window."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cranpose-intellij-ui"
+path = "src/main.rs"
+
+[features]
+default = ["desktop"]
+# Opens an ordinary desktop window when the binary is started without an IDE,
+# for iterating on the UI with `cargo run`. The plugin bundles a build without
+# it, which carries no windowing code at all.
+desktop = ["cranpose/desktop"]
+
+[dependencies]
+cranpose = { version = "0.1.163", features = ["embed"] }
+cranpose-animation = "0.1.163"
+cranpose-core = "0.1.163"
+cranpose-ui-graphics = "0.1.163"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+

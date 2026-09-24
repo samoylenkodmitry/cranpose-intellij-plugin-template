@@ -1,0 +1,21 @@
+<idea-plugin>
+    <id>dev.cranpose.intellij.template</id>
+    <name>Cranpose Tool Window</name>
+    <vendor url="https://github.com/samoylenkodmitry/cranpose">Cranpose</vendor>
+    <description><![CDATA[
+        A tool window whose UI is written in Rust with Cranpose and drawn by the GPU, shaders included.
+        The UI runs in its own process, so it can never take the IDE down, and it talks to the IDE
+        through JSON messages: it follows the IDE theme and the focused editor, shows notifications
+        and opens files.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Cranpose"
+                    anchor="right"
+                    icon="/icons/cranpose.svg"
+                    factoryClass="dev.cranpose.intellij.CranposeToolWindowFactory"/>
+        <notificationGroup id="Cranpose" displayType="BALLOON"/>
+    </extensions>
+</idea-plugin>

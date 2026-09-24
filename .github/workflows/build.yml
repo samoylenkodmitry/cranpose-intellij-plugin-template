@@ -1,0 +1,111 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: UI binary (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin, exe: cranpose-intellij-ui }
+          - { platform: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin, exe: cranpose-intellij-ui }
+          - { platform: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, exe: cranpose-intellij-ui }
+          - { platform: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, exe: cranpose-intellij-ui }
+          - { platform: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc, exe: cranpose-intellij-ui.exe }
+          - { platform: windows-aarch64, os: windows-latest, target: aarch64-pc-windows-msvc, exe: cranpose-intellij-ui.exe }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build the UI without the desktop window code
+        run: cargo build --release --locked --no-default-features -p cranpose-intellij-ui --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: target/${{ matrix.target }}/release/${{ matrix.exe }}
+          if-no-files-found: error
+
+  test:
+    name: Tests (Linux, software Vulkan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a software Vulkan driver
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Rust tests
+        run: cargo test --locked -p cranpose-intellij-ui
+      - name: Plugin tests, including the end-to-end test against the real UI
+        working-directory: plugin
+        run: ./gradlew test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-frames
+          path: plugin/build/test-frames
+          if-no-files-found: ignore
+
+  plugin:
+    name: Plugin (all platforms)
+    needs: [native, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - name: Lay the binaries out as native/<os>-<arch>/
+        run: for dir in native/native-*; do mv "$dir" "native/${dir#native/native-}"; done && find native -type f
+      - name: Build the plugin
+        working-directory: plugin
+        run: ./gradlew buildPlugin -PcranposeNativeDir="$GITHUB_WORKSPACE/native"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin
+          path: plugin/build/distributions/*.zip
+          if-no-files-found: error
+      - name: Attach the plugin to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" plugin/build/distributions/*.zip --generate-notes
+      - name: Publish to JetBrains Marketplace
+        if: startsWith(github.ref, 'refs/tags/v') && env.PUBLISH_TOKEN != ''
+        working-directory: plugin
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: ./gradlew publishPlugin -PcranposeNativeDir="$GITHUB_WORKSPACE/native"

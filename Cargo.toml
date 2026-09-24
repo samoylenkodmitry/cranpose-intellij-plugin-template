@@ -1,0 +1,28 @@
+[workspace]
+members = ["ui"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+
+[patch.crates-io]
+cranpose = { git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49918cca3e4c0e5482ba22c8f05219d0dd451a4" }
+cranpose-animation = { git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49918cca3e4c0e5482ba22c8f05219d0dd451a4" }
+cranpose-core = { git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49918cca3e4c0e5482ba22c8f05219d0dd451a4" }
+cranpose-ui-graphics = { git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49918cca3e4c0e5482ba22c8f05219d0dd451a4" }
