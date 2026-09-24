@@ -5,6 +5,8 @@ is a [Cranpose](https://github.com/samoylenkodmitry/Cranpose) app — Compose-st
 declarative UI, drawn by the GPU, WGSL shaders included — and it talks to the
 IDE in both directions. Click **Use this template** to start your own plugin.
 
+<img src="docs/screenshot.png" width="420" alt="The template's tool window: a WGSL shader card, the IDE's focused editor and controls that notify the IDE">
+
 ```
  IDE process (JVM)                          UI process (Rust, one per tool window)
 ┌──────────────────────────────┐           ┌───────────────────────────────────────┐

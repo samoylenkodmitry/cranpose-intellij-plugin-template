@@ -26,7 +26,7 @@ jobs:
           - { platform: windows-aarch64, os: windows-latest, target: aarch64-pc-windows-msvc, exe: cranpose-intellij-ui.exe }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -35,7 +35,7 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build the UI without the desktop window code
         run: cargo build --release --locked --no-default-features -p cranpose-intellij-ui --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/${{ matrix.exe }}
@@ -45,22 +45,22 @@ jobs:
     name: Tests (Linux, software Vulkan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install a software Vulkan driver
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Rust tests
         run: cargo test --locked -p cranpose-intellij-ui
       - name: Plugin tests, including the end-to-end test against the real UI
         working-directory: plugin
         run: ./gradlew test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-frames
@@ -76,13 +76,13 @@ jobs:
     env:
       PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
-      - uses: actions/download-artifact@v4
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: actions/download-artifact@v8
         with:
           pattern: native-*
           path: native
@@ -91,7 +91,7 @@ jobs:
       - name: Build the plugin
         working-directory: plugin
         run: ./gradlew buildPlugin -PcranposeNativeDir="$GITHUB_WORKSPACE/native"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: plugin
           path: plugin/build/distributions/*.zip
