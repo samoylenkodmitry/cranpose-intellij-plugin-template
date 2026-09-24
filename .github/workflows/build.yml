@@ -54,7 +54,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Rust tests
         run: cargo test --locked -p cranpose-intellij-ui
       - name: Plugin tests, including the end-to-end test against the real UI
@@ -81,7 +81,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - uses: actions/download-artifact@v4
         with:
           pattern: native-*
