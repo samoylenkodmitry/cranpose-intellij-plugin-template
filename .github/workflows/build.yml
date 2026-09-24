@@ -35,7 +35,7 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build the UI without the desktop window code
         run: cargo build --release --locked --no-default-features -p cranpose-intellij-ui --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.platform }}
           path: target/${{ matrix.target }}/release/${{ matrix.exe }}
@@ -60,7 +60,7 @@ jobs:
       - name: Plugin tests, including the end-to-end test against the real UI
         working-directory: plugin
         run: ./gradlew test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-frames
@@ -91,7 +91,7 @@ jobs:
       - name: Build the plugin
         working-directory: plugin
         run: ./gradlew buildPlugin -PcranposeNativeDir="$GITHUB_WORKSPACE/native"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: plugin
           path: plugin/build/distributions/*.zip
