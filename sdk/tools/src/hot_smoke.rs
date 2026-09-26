@@ -37,6 +37,15 @@ pub struct Options {
     pub source: PathBuf,
     #[arg(long)]
     pub dx: Option<PathBuf>,
+    /// Additional alternating edits, with save-to-ack and save-to-snapshot timings.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=100))]
+    pub measure_rounds: u32,
+    /// Simulate ignored build output during each measured edit (fixture only).
+    #[arg(long, default_value_t = 0, requires = "fixture")]
+    pub background_noise_ms: u64,
+    /// Write the test result and raw timing samples as JSON.
+    #[arg(long)]
+    pub report: Option<PathBuf>,
 }
 struct Cleanup {
     child: Child,
@@ -54,9 +63,10 @@ impl Drop for Cleanup {
 }
 struct Host {
     writer: Arc<Mutex<TcpStream>>,
-    messages: mpsc::Receiver<Result<(String, Value)>>,
+    messages: mpsc::Receiver<Result<(String, Value, Instant)>>,
     frames: Arc<AtomicUsize>,
     runtime: Value,
+    applied_at: Option<Instant>,
 }
 impl Drop for Host {
     fn drop(&mut self) {
@@ -94,7 +104,11 @@ impl Host {
                         }
                         Event::Message(channel, payload) => {
                             if sender
-                                .send(Ok((channel, serde_json::from_str(&payload)?)))
+                                .send(Ok((
+                                    channel,
+                                    serde_json::from_str(&payload)?,
+                                    Instant::now(),
+                                )))
                                 .is_err()
                             {
                                 return Ok(());
@@ -113,6 +127,7 @@ impl Host {
             messages,
             frames,
             runtime: Value::Null,
+            applied_at: None,
         };
         host.send(
             Packet::new(1)
@@ -147,10 +162,11 @@ impl Host {
             }
             match self.messages.recv_timeout(Duration::from_millis(200)) {
                 Ok(result) => {
-                    let (channel, payload) = result?;
+                    let (channel, payload, received_at) = result?;
                     if channel == "cranpose.dev.applied" {
                         println!("{}", json!({"runtime":payload}));
                         self.runtime = payload;
+                        self.applied_at = Some(received_at);
                     } else if channel == "cranpose.inspector.v2.snapshot" && !self.runtime.is_null()
                     {
                         let nodes = payload["nodes"].as_array().context("Inspector nodes")?;
@@ -207,6 +223,7 @@ pub fn run(options: Options) -> Result<()> {
         command.env("CRANPOSE_DX", dx.canonicalize()?);
     }
     process::isolate(&mut command);
+    let started = Instant::now();
     let mut cleanup = Cleanup {
         child: command.spawn()?,
         source,
@@ -233,6 +250,7 @@ pub fn run(options: Options) -> Result<()> {
     };
     let mut host = Host::new(stream, &token)?;
     let snapshot = host.snapshot(&["Count: 0", "Increment"], 30)?;
+    let startup_ms = started.elapsed().as_secs_f64() * 1000.0;
     let pid = host.runtime["pid"].clone();
     let label = snapshot["nodes"]
         .as_array()
@@ -253,8 +271,45 @@ pub fn run(options: Options) -> Result<()> {
         .replace("\"Increment\"", "\"Add two!!\"")
         .replace("count.get() + 1", "count.get() + 2");
     ensure!(patched != cleanup.original, "Fixture lacks patch point");
-    fs::write(&cleanup.source, &patched)?;
-    host.snapshot(&["Count: 3", "Add two!!"], 120)?;
+    let mut timings = Vec::new();
+    for round in 0..=options.measure_rounds {
+        // Alternate same-length literals so every sample requires a new patch while
+        // preserving closure identities, source positions and the remembered count.
+        let label = if round.is_multiple_of(2) {
+            "Add two!!"
+        } else {
+            "Plus two!"
+        };
+        let source = patched.replace("Add two!!", label);
+        let previous_generation = host.runtime["generation"].as_u64().unwrap_or(0);
+        let noise = Noise::start(&workspace, options.background_noise_ms)?;
+        let saved = Instant::now();
+        fs::write(&cleanup.source, source)?;
+        host.snapshot(&["Count: 3", label], 120)?;
+        let observed = Instant::now();
+        let applied = host
+            .applied_at
+            .context("Missing patch acknowledgement timestamp")?;
+        ensure!(
+            host.runtime["pid"] == pid,
+            "Measured edit restarted the application"
+        );
+        ensure!(
+            host.runtime["generation"].as_u64().unwrap_or(0) > previous_generation,
+            "Measured edit reused an earlier acknowledgement"
+        );
+        ensure!(applied >= saved, "Patch acknowledgement predates the edit");
+        let sample = json!({"round":round, "saveToAppliedMs":(applied-saved).as_secs_f64()*1000.0,
+            "saveToSnapshotMs":(observed-saved).as_secs_f64()*1000.0,
+            "generation":host.runtime["generation"]});
+        println!("{}", json!({"timing":sample}));
+        timings.push(sample);
+        noise.finish()?;
+    }
+    if !options.measure_rounds.is_multiple_of(2) {
+        fs::write(&cleanup.source, &patched)?;
+        host.snapshot(&["Count: 3", "Add two!!"], 120)?;
+    }
     ensure!(host.runtime["pid"] == pid, "Application restarted");
     ensure!(
         host.runtime["generation"].as_u64().unwrap_or(0) > 0,
@@ -291,10 +346,13 @@ pub fn run(options: Options) -> Result<()> {
         host.runtime["pid"] == pid,
         "Recovery restarted the application"
     );
-    println!(
-        "{}",
-        json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change"})
-    );
+    let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change",
+        "startupMs":startup_ms, "backgroundNoiseMs":options.background_noise_ms,
+        "snapshotPollMs":200, "patches":timings});
+    if let Some(report) = options.report {
+        fs::write(report, serde_json::to_vec_pretty(&result)?)?;
+    }
+    println!("{result}");
     Ok(())
 }
 fn wait_log(path: &std::path::Path, offset: u64, marker: &str, child: &mut Child) -> Result<()> {
@@ -333,4 +391,45 @@ fn copy_fixture(source: &std::path::Path, destination: &std::path::Path) -> Resu
         }
     }
     Ok(())
+}
+
+/// Join before the next edit so a sample never inherits another sample's noise.
+struct Noise(Option<thread::JoinHandle<std::io::Result<()>>>);
+impl Noise {
+    fn finish(mut self) -> Result<()> {
+        if let Some(worker) = self.0.take() {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("Background noise worker panicked"))??;
+        }
+        Ok(())
+    }
+    fn start(workspace: &std::path::Path, millis: u64) -> Result<Self> {
+        if millis == 0 {
+            return Ok(Self(None));
+        }
+        let directory = workspace.join("target/cranpose-reload-benchmark");
+        fs::create_dir_all(&directory)?;
+        Ok(Self(Some(thread::spawn(move || {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_millis(millis) {
+                fs::write(
+                    directory.join("noise.json"),
+                    start.elapsed().as_nanos().to_string(),
+                )?;
+                thread::sleep(Duration::from_millis(20));
+            }
+            Ok(())
+        }))))
+    }
+}
+impl Drop for Noise {
+    fn drop(&mut self) {
+        if let Some(worker) = self.0.take() {
+            match worker.join() {
+                Ok(Ok(())) => {}
+                result => eprintln!("Background noise failed: {result:?}"),
+            }
+        }
+    }
 }

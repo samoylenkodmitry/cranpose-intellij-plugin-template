@@ -970,6 +970,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cranpose-plugin-watch"
+version = "0.1.0"
+
+[[package]]
 name = "cranpose-render-common"
 version = "0.1.164"
 source = "git+https://github.com/samoylenkodmitry/Cranpose?rev=e177b19985c303a13fcf40d61decc7253fdbe057#e177b19985c303a13fcf40d61decc7253fdbe057"
