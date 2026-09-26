@@ -73,13 +73,27 @@ crates from this repository. There is no dependency back on Studio.
 | `sdk/host` | JNI dispatch, native surfaces, lifecycle, editor and project integration |
 | `sdk/jvm-bridge` | JVM classfile generation in Rust |
 | `sdk/tools` | Packaging, SDK tests, native verification and release tools |
-| `sdk/ux` | Theme parsing, contrast-aware foregrounds and searchable tree models |
+| `sdk/ux` | Themes, searchable trees and change-only host message delivery |
+| `sdk/watch` | Bounded, deduplicated file-change batches with quiet and maximum deadlines |
 
 The template disables Cargo project and stability features; applications opt in
 through `HostFeatures`. Plugin identity and checkout paths are explicit in each
 application's build entry point, so tools cannot accidentally package their SDK checkout.
 The UX crate has no Cranpose version dependency: its colors are converted at the
 UI boundary, and nightly framework compatibility checks still use one framework.
+
+`ChangeQueue` accepts already-filtered keys from a watcher callback. Repeated keys
+share one entry. A quiet period groups atomic saves; a maximum deadline prevents
+continuous edits from starving the consumer. Overflow or lost events invalidate
+the whole batch so the application can require a restart instead of applying
+incomplete changes. The crate uses only the Rust standard library.
+
+The shared `hot-smoke` tool can record `--measure-rounds N --report timings.json`.
+It measures source-save to runtime acknowledgement and to a matching inspector
+snapshot, while checking application PID, remembered state and error recovery.
+`--background-noise-ms N` writes ignored build output during fixture measurements.
+Snapshot observation has a 200 ms polling interval; acknowledgement timestamps
+are captured by the socket reader. Keep benchmarks separate from other builds.
 
 ## Make it yours
 
