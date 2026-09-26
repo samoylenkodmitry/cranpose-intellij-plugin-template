@@ -34,6 +34,7 @@ struct State {
     active: Option<(i64, Arc<Panel>)>,
     candidate: Option<(i64, Arc<Panel>)>,
     placement: Value,
+    checkpoint: Value,
 }
 impl Workspace {
     pub fn new(project: Arc<Project>, j: &mut J<'_>, source: O) -> Result<Arc<Self>> {
@@ -65,6 +66,7 @@ impl Workspace {
                 active: None,
                 candidate: None,
                 placement: Value::Null,
+                checkpoint: Value::Null,
             }),
             closed: AtomicBool::new(false),
         });
@@ -165,7 +167,15 @@ impl Workspace {
         };
         let settings = serde_json::from_str::<Value>(&self.project.property(j, "cranpose.studio")?)
             .unwrap_or(json!({}));
-        self.studio.message("studio.init",&json!({"root":self.project.root,"cache":project::cache(j)?,"source":self.source_path,"settings":settings}).to_string());
+        let (checkpoint, active, candidate) = {
+            let state = self.state.lock().expect("workspace");
+            (
+                state.checkpoint.clone(),
+                state.active.as_ref().map_or(0, |s| s.0),
+                state.candidate.as_ref().map_or(0, |s| s.0),
+            )
+        };
+        self.studio.message("studio.init", &json!({"root":self.project.root,"cache":project::cache(j)?,"source":self.source_path,"settings":settings,"checkpoint":checkpoint,"activeSession":active,"candidateSession":candidate}).to_string());
         self.project.theme(j, &self.studio)?;
         self.project.publish();
         for payload in pending {
@@ -220,6 +230,24 @@ impl Workspace {
                         &model::s(&request, "channel"),
                         &model::s(&request, "payload"),
                     );
+                }
+            }
+            "checkpoint" => {
+                let checkpoint = request["value"].clone();
+                if checkpoint.is_object() && checkpoint["settings"].is_object() {
+                    let changed = {
+                        let mut state = self.state.lock().expect("workspace");
+                        let changed = state.checkpoint["settings"] != checkpoint["settings"];
+                        state.checkpoint = checkpoint.clone();
+                        changed
+                    };
+                    if changed {
+                        self.project.set_property(
+                            j,
+                            "cranpose.studio",
+                            &checkpoint["settings"].to_string(),
+                        )?;
+                    }
                 }
             }
             "settings" => {
@@ -777,4 +805,61 @@ pub fn docs(j: &mut J<'_>) -> Result<()> {
         "(Ljava/lang/String;)V",
         &[A::S("https://docs.rs/cranpose/latest/cranpose/")],
     )
+}
+
+#[cfg(feature = "ide-tests")]
+pub fn integration_test(project: Arc<Project>, j: &mut J<'_>) -> Result<()> {
+    use crate::protocol::Packet;
+    use anyhow::ensure;
+    use std::time::Instant;
+    let saved = project.property(j, "cranpose.studio")?;
+    project.set_property(
+        j,
+        "cranpose.studio",
+        r#"{"width":612,"height":520,"inspect":true}"#,
+    )?;
+    let workspace = Workspace::new(project.clone(), j, j.null()?)?;
+    bounds(j, workspace.component(), 0, 0, 720, 620)?;
+    workspace.layout(j)?;
+    workspace.studio.start(j)?;
+    let result = (|| -> Result<()> {
+        let wait_checkpoint = |j: &mut J<'_>| -> Result<()> {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                workspace.studio.tick(j)?;
+                workspace
+                    .studio
+                    .send(Packet::new(1).int(0).int(720).int(620).float(1.).float(60.));
+                workspace.studio.send(Packet::new(13).int(0).byte(1));
+                if workspace.state.lock().expect("workspace").checkpoint["settings"]["width"] == 612
+                {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            anyhow::bail!("Cranpose controller did not return its initialized checkpoint");
+        };
+        wait_checkpoint(j)?;
+        {
+            let mut state = workspace.state.lock().expect("workspace");
+            state.checkpoint["selected"] = json!("retained-selection");
+            state.checkpoint["settings"]["width"] = json!(614);
+        }
+        workspace.studio.restart(j)?;
+        // Persisted width remains authoritative; other controller state comes from the checkpoint.
+        wait_checkpoint(j)?;
+        let state = workspace.state.lock().expect("workspace");
+        ensure!(
+            state.checkpoint["selected"] == "retained-selection",
+            "Controller checkpoint was lost while restarting native UI"
+        );
+        ensure!(
+            state.active.is_none() && state.candidate.is_none(),
+            "Controller restart unexpectedly launched an application"
+        );
+        Ok(())
+    })();
+    workspace.dispose(j)?;
+    project.set_property(j, "cranpose.studio", &saved)?;
+    result
 }

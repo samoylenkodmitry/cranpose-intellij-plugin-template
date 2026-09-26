@@ -164,22 +164,30 @@ impl Panel {
         self.scope.clear();
         Ok(())
     }
+    pub(crate) fn restart(self: &Arc<Self>, j: &mut J<'_>) -> Result<()> {
+        let children = {
+            let mut state = self.state.lock().expect("panel");
+            state.session.take();
+            state.connected = false;
+            state.children.drain().map(|(_, v)| v).collect::<Vec<_>>()
+        };
+        for child in children {
+            child.close(j)?;
+        }
+        let callback = self.on_lifecycle.lock().expect("callback").clone();
+        if let Some(callback) = callback {
+            callback(j, self, false, "Rebuilding Cranpose UI")?;
+        }
+        self.start(j)?;
+        Ok(())
+    }
     pub fn tick(self: &Arc<Self>, j: &mut J<'_>) -> Result<()> {
         let restart = {
             let state = self.state.lock().expect("panel");
             !state.closed && state.watcher.as_ref().is_some_and(|w| w.changed())
         };
         if restart {
-            let children = {
-                let mut state = self.state.lock().expect("panel");
-                state.session.take();
-                state.connected = false;
-                state.children.drain().map(|(_, v)| v).collect::<Vec<_>>()
-            };
-            for child in children {
-                child.close(j)?;
-            }
-            self.start(j)?;
+            self.restart(j)?;
         }
         let events = {
             let state = self.state.lock().expect("panel");

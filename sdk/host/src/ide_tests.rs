@@ -28,9 +28,13 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                 ("native surface pixels and disposal", surface),
                 ("persistent Cargo configuration", configuration),
                 ("native Cranpose rendering", native_ui),
+                ("preview UI reconnection", reconnect),
                 ("inline stability badges", inlays),
             ] {
-                if (name == "persistent Cargo configuration" && !crate::features().cargo)
+                if (matches!(
+                    name,
+                    "persistent Cargo configuration" | "preview UI reconnection"
+                ) && !crate::features().cargo)
                     || (name == "inline stability badges" && !crate::features().stability)
                 {
                     continue;
@@ -373,4 +377,9 @@ fn inlays(j: &mut J<'_>) -> Result<()> {
         &[A::O(&editor)],
     )?;
     result
+}
+
+fn reconnect(j: &mut J<'_>) -> Result<()> {
+    let p = project(j)?;
+    crate::workspace::integration_test(p, j)
 }
