@@ -454,7 +454,8 @@ impl Workspace {
             &self.viewport,
             0,
             clip_y,
-            width,
+            number(&placement["viewport"], "width", width as f64).clamp(1.0, width.max(1) as f64)
+                as i32,
             number(&placement["viewport"], "height", height as f64).max(1.0) as i32,
         )?;
         bounds(
