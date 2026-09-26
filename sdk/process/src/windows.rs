@@ -106,13 +106,15 @@ impl Job {
 
 pub fn is_running(pid: u32) -> bool {
     use windows_sys::Win32::{
-        Foundation::WAIT_TIMEOUT,
+        Foundation::{ERROR_INVALID_PARAMETER, GetLastError, WAIT_TIMEOUT},
         System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
     };
     // SAFETY: only asks to observe process completion, never to mutate it.
     let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if raw.is_null() {
-        return false;
+        // A missing PID is gone; inaccessible processes must not count as exited.
+        // SAFETY: reads the error from the failed OpenProcess call above.
+        return unsafe { GetLastError() } != ERROR_INVALID_PARAMETER;
     }
     // SAFETY: OpenProcess returned a valid uniquely owned handle.
     let process = unsafe { OwnedHandle::from_raw_handle(raw) };

@@ -63,7 +63,7 @@ impl Process {
         #[cfg(windows)]
         let job = windows::Job::prepare(&mut command)?;
         let child = command.spawn()?;
-        let mut process = Self {
+        let process = Self {
             child,
             cleaned: false,
             #[cfg(unix)]
@@ -73,8 +73,6 @@ impl Process {
         };
         #[cfg(windows)]
         process.job.attach_and_resume(&process.child)?;
-        // Keep a mutable binding on every target for the Windows error-path Drop.
-        let _ = &mut process;
         Ok(process)
     }
 
@@ -165,13 +163,12 @@ pub fn is_running(pid: u32) -> bool {
     #[cfg(unix)]
     {
         #[cfg(target_os = "linux")]
-        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            if stat
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            && stat
                 .rsplit_once(") ")
                 .is_some_and(|(_, tail)| tail.starts_with('Z'))
-            {
-                return false;
-            }
+        {
+            return false;
         }
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None)
             != Err(nix::errno::Errno::ESRCH)
