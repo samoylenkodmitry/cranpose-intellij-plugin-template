@@ -21,10 +21,10 @@ default = ["desktop"]
 desktop = ["cranpose/desktop"]
 
 [dependencies]
-cranpose = { version = "0.1.164", features = ["embed"] }
-cranpose-animation = "0.1.164"
-cranpose-core = "0.1.164"
-cranpose-ui-graphics = "0.1.164"
+cranpose = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057", features = ["embed"] }
+cranpose-animation = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057" }
+cranpose-core = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057" }
+cranpose-ui-graphics = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

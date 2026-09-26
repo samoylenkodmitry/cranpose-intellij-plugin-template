@@ -1,5 +1,5 @@
-<idea-plugin>
-    <id>dev.cranpose.intellij.template</id>
+<idea-plugin require-restart="true">
+    <id>dev.cranpose.toolwindow</id>
     <name>Cranpose Tool Window</name>
     <vendor url="https://github.com/samoylenkodmitry/cranpose">Cranpose</vendor>
     <description><![CDATA[
@@ -15,7 +15,7 @@
         <toolWindow id="Cranpose"
                     anchor="right"
                     icon="/icons/cranpose.svg"
-                    factoryClass="dev.cranpose.intellij.CranposeToolWindowFactory"/>
+                    factoryClass="dev.cranpose.rust.ToolWindow"/>
         <notificationGroup id="Cranpose" displayType="BALLOON"/>
     </extensions>
 </idea-plugin>

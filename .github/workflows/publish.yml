@@ -1,0 +1,64 @@
+name: Publish
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag matching plugin/VERSION (vX.Y.Z)
+        required: true
+        type: string
+      plugin_id:
+        description: Marketplace numeric ID assigned after the first manual upload
+        required: true
+        type: string
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: marketplace-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: marketplace
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: cargo run --locked -p cranpose-template-tools -- release validate-tag "$RELEASE_TAG"
+      - name: Require successful Build for this exact commit
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: cargo run --locked -p cranpose-template-tools -- release successful-build
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.build.outputs.run_id }}
+          name: plugin
+          path: verified-plugin
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Sign the verified package
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: cargo run --locked -p cranpose-template-tools -- release sign verified-plugin/cranpose-template-*.zip signed-plugin.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: signed-plugin
+          path: signed-plugin.zip
+          if-no-files-found: error
+      - name: Publish to Marketplace
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          MARKETPLACE_PLUGIN_ID: ${{ inputs.plugin_id }}
+        run: cargo run --locked -p cranpose-template-tools -- release publish signed-plugin.zip --plugin-id "$MARKETPLACE_PLUGIN_ID"
+

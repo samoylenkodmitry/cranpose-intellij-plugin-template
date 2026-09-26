@@ -1,71 +1,63 @@
-# Extending the IntelliJ host
+# Extend the Rust host
 
-`IdeBridge` owns the transport callbacks and forwards the theme and focused
-editor. Supply its `onReady` and `onMessage` callbacks to add your application's
-message contract:
+The template loads the pinned `cranpose-ide-host` Rust library. Configure optional
+features before the first JNI dispatch. The template disables the Cargo dashboard
+and stability analyzer because its tool window is a general Cranpose application.
 
-```kotlin
-IdeBridge(
-    project, panel, content,
-    onReady = { panel.send("my.project", projectSnapshot()) },
-    onMessage = { channel, payload ->
-        if (channel == "my.action") {
-            handleAction(payload)
-            true
-        } else {
-            false
-        }
-    },
-)
+## Receive custom UI messages
+
+In `host/src/lib.rs`, call `cranpose_host::set_message_handler(handle_message)` before
+forwarding the JNI dispatch. Registration is idempotent; the first handler wins.
+
+```rust
+fn handle_message(
+    j: &mut cranpose_host::jvm::J<'_>,
+    project: &cranpose_host::jvm::O,
+    channel: &str,
+    payload: &str,
+) -> anyhow::Result<bool> {
+    if channel != "my-plugin.show-project" {
+        return Ok(false);
+    }
+    let name = j.text(project, "getName")?;
+    // Parse payload with serde_json and call the IDE SDK through j.
+    eprintln!("{name}: {payload}");
+    Ok(true)
+}
 ```
 
-Both callbacks run on the IDE event dispatch thread. Return `true` only when your
-handler consumes a channel. Other messages continue to the built-in notification
-and file-opening handlers. Custom payloads can be nested JSON or another format;
-the bridge dispatches them before its own flat-JSON parser.
+Add `anyhow = "1"` to the host dependencies when using this example. A return value
+of `true` consumes the message. Return `false` to let the shared host handle built-in
+channels such as `ide.notify`, `ide.open` and `host.overlay`.
 
-Use project services for background work and bind listeners and running processes
-to the tool window's content disposer. Project commands must check IntelliJ's
-project-trust state before starting user code.
+The callback runs on the IDE event thread. Keep it short; use workers for I/O and
+`cranpose_host::jvm::later` to return to the IDE thread. Keep JVM global references
+only while needed and register callbacks in a disposal `Scope`.
 
-[Cranpose for IntelliJ IDEA](https://github.com/samoylenkodmitry/cranpose-idea)
-is a complete example built from this template.
+## Built-in channel requests
 
-## Hosting previews and other processes
-
-`CranposePanel` accepts an `environment` supplier, evaluated when a process is
-launched. Use it for fixture selectors or application settings:
-
-```kotlin
-val panel = CranposePanel(
-    command = { listOf(executable.toString()) },
-    workingDirectory = projectDirectory,
-    environment = { mapOf("CRANPOSE_PREVIEW" to selectedDescriptor.id) },
-)
+```rust
+cranpose::send_to_host("ide.notify", r#"{"title":"Done","content":"Analysis finished"}"#);
+cranpose::send_to_host("ide.open", r#"{"path":"/absolute/path/src/main.rs"}"#);
 ```
 
-The session always supplies its own authenticated loopback address and token,
-overriding values with those reserved names in the supplied map.
+The host sends `ide.theme`, `ide.editor` and `ide.caret` state to connected panels.
+Use Cranpose's `rememberHostMessages` and `collectAsState` to consume them.
 
-- `panel.contentScale` magnifies application coordinates from 0.25 to 4.0.
-  Set the component's preferred size to the logical viewport multiplied by this
-  scale. Pointer positions are converted back to application coordinates.
-- `panel.onPointerPress` can return false to select an inspected element without
-  activating the application's click handler.
-- `panel.paintOverlay` draws host selection bounds after the live frame.
-- `panel.onStopped` reports launch failures and process exits on the Swing thread.
-- `panel.canvas.snapshot()` returns an independent image copy for export. Save
-  it off the UI thread.
+## Extend SDK registrations
 
-Bind each running panel and its editor-overlay listeners to a session disposer.
-Dispose that session when replacing a preview, then dispose the whole workspace
-through IntelliJ's `Disposer` when its editor or tool-window tab closes.
+The shared `cranpose-jvm-bridge` crate writes JVM classfiles directly from Rust.
+Its IntelliJ adapters forward into native Rust; no Java or Kotlin source generation
+or compiler is involved. Existing adapters cover tool windows, surfaces, listeners,
+editor previews, inlay renderers, actions and run configurations.
 
-## Inspecting the embedded UI
+For a new SDK interface, add its descriptors and forwarding methods to the generator,
+handle its operations in the Rust host, and register the class in `plugin.xml`.
+Run the native IDEA integration tests and Plugin Verifier after changing descriptors.
 
-Framework revisions after 0.1.164 accept an empty message on
-`cranpose.inspector.v1.request` and reply on
-`cranpose.inspector.v1.snapshot` with a text report of the primary surface's
-layout, render scene and screen summary. Request a snapshot from an explicit
-user action; keep reports local. The report is for display, not machine parsing.
-Older framework versions can still render and do not answer this request.
+## Inspection and development
+
+The template's binary watcher restarts an ordinary rebuilt UI. Stateful application
+hot reload belongs to [Cranpose for IntelliJ IDEA](https://github.com/samoylenkodmitry/cranpose-idea):
+its development runner owns instrumentation and Subsecond integration in a separate
+Cargo workspace. Application release manifests, profiles and binaries stay unchanged.

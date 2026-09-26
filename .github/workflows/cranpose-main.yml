@@ -1,36 +1,28 @@
 name: Cranpose main
-
 on:
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
   test:
-    name: Tests against Cranpose main
+    name: Compatibility with Cranpose main
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install a software Vulkan driver
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libxkbcommon-dev libwayland-dev
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-java@v6
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run -p cranpose-template-tools -- use-framework-main
+      - run: cargo test --locked --no-default-features --workspace
+      - run: cargo run --locked -p cranpose-template-tools -- fetch-ide
+      - run: cargo run --locked -p cranpose-template-tools -- ide-test --ide "$CRANPOSE_TEST_IDE"
+      - uses: actions/upload-artifact@v7
+        if: always()
         with:
-          distribution: temurin
-          java-version: 21
-      - uses: gradle/actions/setup-gradle@v6
-      - name: Resolve Cranpose from its main branch
-        run: |
-          cat >> Cargo.toml <<'PATCH'
-
-          [patch.crates-io]
-          cranpose = { git = "https://github.com/samoylenkodmitry/Cranpose", branch = "main" }
-          cranpose-animation = { git = "https://github.com/samoylenkodmitry/Cranpose", branch = "main" }
-          cranpose-core = { git = "https://github.com/samoylenkodmitry/Cranpose", branch = "main" }
-          cranpose-ui-graphics = { git = "https://github.com/samoylenkodmitry/Cranpose", branch = "main" }
-          PATCH
-      - name: Rust tests
-        run: cargo test -p cranpose-intellij-ui
-      - name: Plugin tests, including the end-to-end test against the real UI
-        working-directory: plugin
-        run: ./gradlew test
+          name: framework-compatibility-evidence
+          path: |
+            target/ide-tests/**/evidence
+            target/ide-tests/**/console.log
+          if-no-files-found: ignore
