@@ -931,6 +931,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cranpose-plugin-cache"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "cranpose-plugin-host"
 version = "0.1.0"
 dependencies = [
