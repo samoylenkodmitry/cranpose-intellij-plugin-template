@@ -7,7 +7,7 @@ use std::{
     io::{BufRead, BufReader},
     net::{TcpListener, TcpStream},
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -27,7 +27,7 @@ pub struct Session {
     pub events: Receiver<SessionEvent>,
     outgoing: SyncSender<Packet>,
     stream: Arc<Mutex<Option<TcpStream>>>,
-    child: Arc<Mutex<Option<Child>>>,
+    child: Arc<Mutex<Option<crate::process::Process>>>,
     closed: Arc<AtomicBool>,
 }
 #[derive(Clone)]
@@ -60,8 +60,8 @@ impl Session {
         if let Some(directory) = options.directory {
             command.current_dir(directory);
         }
-        crate::process::isolate(&mut command);
-        let mut process = command.spawn().context("Start Cranpose native process")?;
+        let mut process =
+            crate::process::Process::spawn(command).context("Start Cranpose native process")?;
         let (sender, events) = mpsc::sync_channel(32);
         for pipe in [
             process
@@ -135,6 +135,14 @@ impl Session {
                 socket.set_nonblocking(false)?;
                 socket.set_nodelay(true)?;
                 socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+                // Make cancellation able to interrupt an incomplete handshake too.
+                {
+                    let mut active = stream.lock().expect("stream lock");
+                    if closed.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    *active = Some(socket.try_clone()?);
+                }
                 match protocol::read(&mut socket)? {
                     Some(Event::Hello(version, received)) => ensure!(
                         version == protocol::VERSION
@@ -145,7 +153,6 @@ impl Session {
                 }
                 socket.set_read_timeout(None)?;
                 socket.set_write_timeout(Some(Duration::from_secs(2)))?;
-                *stream.lock().expect("stream lock") = Some(socket.try_clone()?);
                 let mut writer = socket.try_clone()?;
                 thread::spawn(move || {
                     while let Ok(packet) = packets.recv() {
@@ -168,6 +175,11 @@ impl Session {
                 .err()
                 .map(|e| format!("{e:#}"))
                 .unwrap_or_else(|| "Cranpose process stopped".into());
+            closed.store(true, Ordering::Release);
+            if let Some(socket) = stream.lock().expect("stream lock").take() {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+            stop_child(&child);
             let _ = sender.send(SessionEvent::Stopped(message));
         });
         Ok(result)
@@ -187,24 +199,14 @@ impl Session {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
         let child = self.child.clone();
-        thread::spawn(move || {
-            let mut process = child.lock().expect("child lock").take();
-            let Some(process) = process.as_mut() else {
-                return;
-            };
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
-                if process.try_wait().ok().flatten().is_some() {
-                    crate::process::kill_tree(process);
-                    return;
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-            // The dev runner owns and terminates its compiler/application children.
-            // A forced fallback guarantees this plugin never blocks the IDE on exit.
-            crate::process::kill_tree(process);
-            let _ = process.wait();
-        });
+        thread::spawn(move || stop_child(&child));
+    }
+}
+fn stop_child(child: &Mutex<Option<crate::process::Process>>) {
+    // Release the lock before waiting so the network worker and close() can race safely.
+    let process = child.lock().expect("child lock").take();
+    if let Some(mut process) = process {
+        let _ = process.terminate(Duration::from_secs(2));
     }
 }
 impl Drop for Session {

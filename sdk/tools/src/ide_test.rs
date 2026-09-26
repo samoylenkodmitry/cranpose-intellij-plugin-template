@@ -157,16 +157,15 @@ pub fn run(ide: &Path) -> Result<()> {
         .args(["com.intellij.idea.Main", "cranpose-self-test"]);
     let log = fs::File::create(run.join("console.log"))?;
     command.stdout(log.try_clone()?).stderr(log);
-    cranpose_ide_host::process::isolate(&mut command);
-    let mut child = command.spawn()?;
+
+    let mut child = cranpose_ide_host::process::Process::spawn(command)?;
     let deadline = Instant::now() + Duration::from_secs(180);
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
         if Instant::now() > deadline {
-            cranpose_ide_host::process::kill_tree(&mut child);
-            let _ = child.wait();
+            let _ = child.terminate(Duration::ZERO);
             anyhow::bail!("IDE integration suite timed out: {}", run.display());
         }
         std::thread::sleep(Duration::from_millis(100));

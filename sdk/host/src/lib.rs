@@ -9,7 +9,7 @@ mod project;
 pub mod protocol;
 mod router;
 mod run_configuration;
-mod session;
+pub mod session;
 mod source;
 mod stability;
 mod surface;
