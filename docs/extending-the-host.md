@@ -1,6 +1,6 @@
 # Extend the Rust host
 
-The template loads the pinned `cranpose-ide-host` Rust library. Configure optional
+The template loads its local `cranpose-plugin-host` library from `sdk/host`. Configure optional
 features before the first JNI dispatch. The template disables the Cargo dashboard
 and stability analyzer because its tool window is a general Cranpose application.
 

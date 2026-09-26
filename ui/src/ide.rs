@@ -29,70 +29,19 @@ pub struct Palette {
     pub on_accent: Color,
 }
 
-/// The palette used until the IDE reports its own, and when running alone.
-pub const STANDALONE_PALETTE: Palette = Palette {
-    background: Color(0.117, 0.122, 0.133, 1.0),
-    surface: Color(0.169, 0.176, 0.188, 1.0),
-    text: Color(0.875, 0.882, 0.898, 1.0),
-    muted: Color(0.525, 0.541, 0.569, 1.0),
-    accent: Color(0.208, 0.455, 0.941, 1.0),
-    on_accent: Color(1.0, 1.0, 1.0, 1.0),
-};
+pub use cranpose_plugin_ux::IdeTheme;
 
-/// The IDE theme as the plugin sends it on [`THEME_CHANNEL`]; colors are `#rrggbb`.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct IdeTheme {
-    pub dark: bool,
-    pub background: String,
-    pub surface: String,
-    pub text: String,
-    pub muted: String,
-    pub accent: String,
-}
-
-impl IdeTheme {
-    /// Reads a [`THEME_CHANNEL`] payload.
-    pub fn parse(payload: &str) -> Option<Self> {
-        serde_json::from_str(payload).ok()
-    }
-
-    /// The palette this theme paints with; a malformed color keeps its standalone value.
-    pub fn palette(&self) -> Palette {
-        let pick = |hex: &str, fallback: Color| parse_hex_color(hex).unwrap_or(fallback);
-        let accent = pick(&self.accent, STANDALONE_PALETTE.accent);
-        Palette {
-            background: pick(&self.background, STANDALONE_PALETTE.background),
-            surface: pick(&self.surface, STANDALONE_PALETTE.surface),
-            text: pick(&self.text, STANDALONE_PALETTE.text),
-            muted: pick(&self.muted, STANDALONE_PALETTE.muted),
-            accent,
-            on_accent: readable_on(accent),
+impl From<cranpose_plugin_ux::Palette> for Palette {
+    fn from(value: cranpose_plugin_ux::Palette) -> Self {
+        let color = |c: cranpose_plugin_ux::Rgba| Color(c.0, c.1, c.2, c.3);
+        Self {
+            background: color(value.background),
+            surface: color(value.surface),
+            text: color(value.text),
+            muted: color(value.muted),
+            accent: color(value.accent),
+            on_accent: color(value.on_accent),
         }
-    }
-}
-
-/// A `#rrggbb` color, or `None` for anything else.
-pub fn parse_hex_color(hex: &str) -> Option<Color> {
-    let digits = hex.strip_prefix('#')?;
-    if digits.len() != 6 {
-        return None;
-    }
-    let channel = |range: std::ops::Range<usize>| {
-        digits
-            .get(range)
-            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            .map(|value| f32::from(value) / 255.0)
-    };
-    Some(Color(channel(0..2)?, channel(2..4)?, channel(4..6)?, 1.0))
-}
-
-/// Black or white, whichever reads better on `background`.
-pub fn readable_on(background: Color) -> Color {
-    let luminance = 0.2126 * background.0 + 0.7152 * background.1 + 0.0722 * background.2;
-    if luminance > 0.55 {
-        Color(0.0, 0.0, 0.0, 1.0)
-    } else {
-        Color(1.0, 1.0, 1.0, 1.0)
     }
 }
 
@@ -127,7 +76,11 @@ pub fn open_in_ide(path: &str) -> bool {
 #[track_caller]
 pub fn rememberPalette() -> Palette {
     let theme = collectAsState(rememberHostMessages(THEME_CHANNEL), (), String::new());
-    IdeTheme::parse(&theme.get()).map_or(STANDALONE_PALETTE, |theme| theme.palette())
+    IdeTheme::parse(&theme.get())
+        .map_or(cranpose_plugin_ux::STANDALONE_PALETTE, |theme| {
+            theme.palette()
+        })
+        .into()
 }
 
 #[cfg(test)]

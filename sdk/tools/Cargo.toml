@@ -1,0 +1,23 @@
+[package]
+name = "cranpose-plugin-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+[lib]
+name = "cranpose_ide_tools"
+[dependencies]
+cranpose-jvm-bridge = { path = "../jvm-bridge" }
+anyhow = "1"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+cranpose-ide-host = { package = "cranpose-plugin-host", path = "../host" }
+rand = "0.9"
+semver = "1"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "rustls-tls"] }
+tempfile = "3"
+toml_edit = "0.22"
+[lints]
+workspace = true
