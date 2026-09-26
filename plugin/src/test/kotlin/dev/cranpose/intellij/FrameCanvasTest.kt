@@ -45,4 +45,15 @@ class FrameCanvasTest {
         canvas.clear()
         assertFalse(canvas.paint(BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB).createGraphics()))
     }
+
+    @Test
+    fun exportedPixelsAreIndependentFromSubsequentFrames() {
+        val canvas = FrameCanvas(2.0)
+        canvas.apply(frame(0, 0, 8, 8, 0xFF00FF00.toInt()))
+        val exported = requireNotNull(canvas.snapshot())
+        canvas.apply(frame(0, 0, 8, 8, 0xFFFF0000.toInt()))
+        assertEquals(8, exported.width)
+        assertEquals(0xFF00FF00.toInt(), exported.getRGB(0, 0))
+        assertEquals(0xFFFF0000.toInt(), requireNotNull(canvas.snapshot()).getRGB(0, 0))
+    }
 }

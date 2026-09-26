@@ -53,6 +53,17 @@ class FrameCanvas(scale: Double) {
         synchronized(lock) { image = null }
     }
 
+    /** Returns an independent copy suitable for exporting on a background thread. */
+    fun snapshot(): BufferedImage? = synchronized(lock) {
+        val source = image ?: return null
+        BufferedImage(source.width, source.height, BufferedImage.TYPE_INT_ARGB).also { copy ->
+            copy.createGraphics().let { graphics ->
+                graphics.drawImage(source, 0, 0, null)
+                graphics.dispose()
+            }
+        }
+    }
+
     /** Paints the latest frame at the origin; `false` when there is none yet. */
     fun paint(g: Graphics2D): Boolean = synchronized(lock) {
         val shown = image ?: return false

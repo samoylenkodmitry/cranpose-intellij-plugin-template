@@ -40,6 +40,14 @@ open class SurfaceView(
      */
     var fillsTransparentWindow = false
 
+    /** Magnification of logical application coordinates inside this surface. */
+    var contentScale: Double = 1.0
+        set(value) {
+            require(value.isFinite() && value in 0.25..4.0)
+            field = value
+            sendSize()
+        }
+
     /** Physical pixels per logical pixel on the screen showing this component. */
     val screenScale: Double
         get() = graphicsConfiguration?.defaultTransform?.scaleX ?: canvas.scale
@@ -51,7 +59,7 @@ open class SurfaceView(
         val scale = screenScale
         canvas.scale = scale
         val refresh = graphicsConfiguration?.device?.displayMode?.refreshRate?.takeIf { it > 0 } ?: 60
-        host.resize(surface, ceil(width * scale).toInt(), ceil(height * scale).toInt(), scale.toFloat(), refresh.toFloat())
+        host.resize(surface, ceil(width * scale).toInt(), ceil(height * scale).toInt(), (scale * contentScale).toFloat(), refresh.toFloat())
     }
 
     fun sendVisibility() {

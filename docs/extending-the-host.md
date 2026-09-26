@@ -31,6 +31,36 @@ project-trust state before starting user code.
 [Cranpose for IntelliJ IDEA](https://github.com/samoylenkodmitry/cranpose-idea)
 is a complete example built from this template.
 
+## Hosting previews and other processes
+
+`CranposePanel` accepts an `environment` supplier, evaluated when a process is
+launched. Use it for fixture selectors or application settings:
+
+```kotlin
+val panel = CranposePanel(
+    command = { listOf(executable.toString()) },
+    workingDirectory = projectDirectory,
+    environment = { mapOf("CRANPOSE_PREVIEW" to selectedDescriptor.id) },
+)
+```
+
+The session always supplies its own authenticated loopback address and token,
+overriding values with those reserved names in the supplied map.
+
+- `panel.contentScale` magnifies application coordinates from 0.25 to 4.0.
+  Set the component's preferred size to the logical viewport multiplied by this
+  scale. Pointer positions are converted back to application coordinates.
+- `panel.onPointerPress` can return false to select an inspected element without
+  activating the application's click handler.
+- `panel.paintOverlay` draws host selection bounds after the live frame.
+- `panel.onStopped` reports launch failures and process exits on the Swing thread.
+- `panel.canvas.snapshot()` returns an independent image copy for export. Save
+  it off the UI thread.
+
+Bind each running panel and its editor-overlay listeners to a session disposer.
+Dispose that session when replacing a preview, then dispose the whole workspace
+through IntelliJ's `Disposer` when its editor or tool-window tab closes.
+
 ## Inspecting the embedded UI
 
 Framework revisions after 0.1.164 accept an empty message on
