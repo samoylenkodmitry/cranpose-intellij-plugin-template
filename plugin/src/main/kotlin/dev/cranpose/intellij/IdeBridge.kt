@@ -21,11 +21,18 @@ import java.awt.Color
  * The IDE half of the message contract in `ui/src/ide.rs`: pushes the theme
  * and the focused editor to the UI, and carries out what the UI asks for.
  */
-class IdeBridge(private val project: Project, private val panel: CranposePanel, parent: Disposable) {
+class IdeBridge(
+    private val project: Project,
+    private val panel: CranposePanel,
+    parent: Disposable,
+    private val onReady: () -> Unit = {},
+    private val onMessage: (String, String) -> Boolean = { _, _ -> false },
+) {
     init {
         panel.onConnected = {
             sendTheme()
             sendEditor(FileEditorManager.getInstance(project).selectedFiles.firstOrNull())
+            onReady()
         }
         panel.onAppMessage = { channel, payload ->
             ApplicationManager.getApplication().invokeLater({ handle(channel, payload) }, project.disposed)
@@ -65,6 +72,7 @@ class IdeBridge(private val project: Project, private val panel: CranposePanel, 
     }
 
     private fun handle(channel: String, payload: String) {
+        if (onMessage(channel, payload)) return
         val fields = FlatJson.decodeStrings(payload)
         if (fields == null) {
             LOG.warn("Cranpose sent unreadable JSON on $channel: $payload")

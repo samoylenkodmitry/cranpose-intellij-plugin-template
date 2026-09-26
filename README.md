@@ -1,5 +1,8 @@
 # Cranpose IntelliJ plugin template
 
+Building Cranpose applications? Use [Cranpose for IntelliJ IDEA](https://github.com/samoylenkodmitry/cranpose-idea).
+Building your own IDE plugin? See [Extending the host](docs/extending-the-host.md) for application message handlers and inspection.
+
 Write IntelliJ Platform plugins whose UI is Rust: this template's tool window
 is a [Cranpose](https://github.com/samoylenkodmitry/Cranpose) app — Compose-style
 declarative UI, drawn by the GPU, WGSL shaders included — and it talks to the
