@@ -33,7 +33,7 @@ class SurfaceInput(private val view: SurfaceView) {
                 if (!onPress(event) || !SwingUtilities.isLeftMouseButton(event)) return
                 pressed = true
                 pressedAt = event.locationOnScreen
-                host()?.pointerDown(view.surface, event.x.toFloat(), event.y.toFloat())
+                host()?.pointerDown(view.surface, logical(event.x), logical(event.y))
             }
 
             override fun mouseReleased(event: MouseEvent) {
@@ -43,11 +43,11 @@ class SurfaceInput(private val view: SurfaceView) {
                 gesture = null
                 // After a real move or resize the press must not end in a click.
                 val released = if (ended?.travelled == true) Point(-1, -1) else event.point
-                host()?.pointerUp(view.surface, released.x.toFloat(), released.y.toFloat())
+                host()?.pointerUp(view.surface, logical(released.x), logical(released.y))
             }
 
             override fun mouseMoved(event: MouseEvent) {
-                host()?.pointerMove(view.surface, event.x.toFloat(), event.y.toFloat())
+                host()?.pointerMove(view.surface, logical(event.x), logical(event.y))
             }
 
             override fun mouseDragged(event: MouseEvent) {
@@ -64,8 +64,8 @@ class SurfaceInput(private val view: SurfaceView) {
                 val horizontal = event.isShiftDown
                 host()?.scroll(
                     view.surface,
-                    event.x.toFloat(),
-                    event.y.toFloat(),
+                    logical(event.x),
+                    logical(event.y),
                     if (horizontal) delta else 0f,
                     if (horizontal) 0f else delta,
                     KeyCodes.modifiers(event.modifiersEx),
@@ -116,6 +116,8 @@ class SurfaceInput(private val view: SurfaceView) {
     }
 
     private fun host(): HostWriter? = view.link.host
+
+    private fun logical(value: Int): Float = (value / view.contentScale).toFloat()
 
     companion object {
         private const val LINE_PIXELS = 40f

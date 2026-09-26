@@ -24,9 +24,19 @@ class CranposePanel(
     private val command: () -> List<String>,
     private val workingDirectory: Path? = null,
     private val log: (String) -> Unit = {},
+    private val environment: () -> Map<String, String> = { emptyMap() },
 ) : SurfaceView(CranposeProtocol.PRIMARY_SURFACE, SessionLink()), AutoCloseable {
     /** Called on the UI thread each time a process has connected. */
     var onConnected: () -> Unit = {}
+
+    /** Called before a pointer press. Return false to inspect without activating the app. */
+    var onPointerPress: (Point) -> Boolean = { true }
+
+    /** Paints host decorations over the live surface. */
+    var paintOverlay: (Graphics2D) -> Unit = {}
+
+    /** Called on the UI thread when the process exits or cannot start. */
+    var onStopped: (String) -> Unit = {}
 
     /** Called on the session's reader thread for every message the process sends. */
     var onAppMessage: (channel: String, payload: String) -> Unit = { _, _ -> }
@@ -98,11 +108,11 @@ class CranposePanel(
         isOpaque = true
         background = Color(0x2B2D30)
         foreground = Color(0x868A91)
-        input.onPress = {
+        input.onPress = { event ->
             requestFocusInWindow()
             val connected = session != null
             if (!connected) start()
-            connected
+            connected && onPointerPress(event.point)
         }
     }
 
@@ -116,7 +126,7 @@ class CranposePanel(
             repaint()
             try {
                 val listener = Connection()
-                val started = CranposeSession.start(command(), workingDirectory, listener, log)
+                val started = CranposeSession.start(command(), workingDirectory, listener, log, environment = environment())
                 connection = listener
                 session = started
                 link.host = started.host
@@ -130,6 +140,7 @@ class CranposePanel(
             } catch (error: Exception) {
                 status = "Cranpose failed to start: ${error.message}. Click to retry."
                 log("cranpose: ${error.stackTraceToString()}")
+                SwingUtilities.invokeLater { onStopped(status) }
                 repaint()
             } finally {
                 starting = false
@@ -201,6 +212,7 @@ class CranposePanel(
                 status = if (error == null) "Cranpose stopped. Click to restart."
                 else "Cranpose stopped: ${error.message}. Click to restart."
                 canvas.clear()
+                SwingUtilities.invokeLater { onStopped(status) }
                 repaint()
             }
         } catch (_: RejectedExecutionException) {
@@ -216,6 +228,7 @@ class CranposePanel(
             g.color = foreground
             g.drawString(status, 12, 24)
         }
+        paintOverlay(g)
     }
 
     private fun stopSession() {

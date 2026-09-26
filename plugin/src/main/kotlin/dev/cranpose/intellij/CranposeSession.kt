@@ -94,12 +94,14 @@ class CranposeSession private constructor(
             listener: CranposeListener,
             log: (String) -> Unit,
             connectTimeoutMillis: Int = 15_000,
+            environment: Map<String, String> = emptyMap(),
         ): CranposeSession {
             val token = newToken()
             ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
                 val process = ProcessBuilder(command)
                     .apply {
                         workingDirectory?.let { directory(it.toFile()) }
+                        environment().putAll(environment)
                         environment()[ADDRESS_VARIABLE] = socketAddress(server)
                         environment()[TOKEN_VARIABLE] = token
                         redirectErrorStream(true)
