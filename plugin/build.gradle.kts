@@ -21,6 +21,7 @@ dependencies {
     intellijPlatform {
         val localIde = providers.gradleProperty("platformLocalPath").orNull
         if (localIde != null) local(localIde) else intellijIdea(providers.gradleProperty("platformVersion"))
+        testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
     testImplementation("junit:junit:4.13.2")
 }
