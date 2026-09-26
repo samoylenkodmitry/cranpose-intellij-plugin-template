@@ -407,7 +407,7 @@ pub fn run(options: Options) -> Result<()> {
 }
 fn cargo_build_ms(log: &str) -> Option<f64> {
     log.lines().find_map(|line| {
-        if !line.contains("Finished `") {
+        if !line.contains("Finished") || !line.contains(" profile ") {
             return None;
         }
         let (_, elapsed) = line.rsplit_once("target(s) in ")?;
@@ -622,6 +622,11 @@ mod tests {
         assert_eq!(
             cargo_build_ms("Finished `desktop-dev` profile [unoptimized] target(s) in 1m 03s"),
             Some(63000.0)
+        );
+        // Cargo colors the status word when CI forces terminal colors.
+        assert_eq!(
+            cargo_build_ms("\x1b[1m\x1b[92m    Finished\x1b[0m `desktop-dev` profile [unoptimized + debuginfo] target(s) in 3.52s"),
+            Some(3520.0)
         );
         assert_eq!(cargo_build_ms("unrelated log output"), None);
     }
