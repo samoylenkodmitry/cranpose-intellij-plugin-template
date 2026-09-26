@@ -1,6 +1,6 @@
 //! The messages this tool window and its IDE exchange.
 //!
-//! Every channel carries JSON. The IDE side is the plugin's `IdeBridge.kt`;
+//! Every channel carries JSON. The IDE side is the shared Rust host;
 //! the two files are the whole contract. Send with
 //! [`send_to_host`](cranpose::send_to_host) and receive with
 //! [`rememberHostMessages`](cranpose::rememberHostMessages).

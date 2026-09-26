@@ -2,7 +2,7 @@
 //!
 //! `main.rs` runs [`ToolWindow`] inside the IDE when the plugin starts the
 //! binary, and as a desktop window otherwise. [`ide`] is the message contract
-//! with the plugin's `IdeBridge.kt`.
+//! with the shared Rust IDE host.
 
 pub mod aurora;
 pub mod effects;

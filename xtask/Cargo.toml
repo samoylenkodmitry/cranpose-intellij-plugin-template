@@ -1,0 +1,10 @@
+[package]
+name = "cranpose-template-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+cranpose-ide-tools = { package = "xtask", git = "https://github.com/samoylenkodmitry/cranpose-idea", rev = "443e05adbb5a64779602162d2e12e694bda13ec9" }

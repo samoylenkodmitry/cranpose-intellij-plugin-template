@@ -15,7 +15,7 @@
         <toolWindow id="Cranpose"
                     anchor="right"
                     icon="/icons/cranpose.svg"
-                    factoryClass="dev.cranpose.intellij.CranposeToolWindowFactory"/>
+                    factoryClass="dev.cranpose.rust.ToolWindow"/>
         <notificationGroup id="Cranpose" displayType="BALLOON"/>
     </extensions>
 </idea-plugin>
