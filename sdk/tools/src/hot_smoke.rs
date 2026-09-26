@@ -150,6 +150,14 @@ impl Host {
         Ok(())
     }
     fn snapshot(&mut self, expected: &[&str], seconds: u64) -> Result<Value> {
+        self.snapshot_after(expected, seconds, None)
+    }
+    fn snapshot_after(
+        &mut self,
+        expected: &[&str],
+        seconds: u64,
+        after_generation: Option<u64>,
+    ) -> Result<Value> {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         let mut next = Instant::now();
         while Instant::now() < deadline {
@@ -170,9 +178,18 @@ impl Host {
                     } else if channel == "cranpose.inspector.v2.snapshot" && !self.runtime.is_null()
                     {
                         let nodes = payload["nodes"].as_array().context("Inspector nodes")?;
-                        if expected.iter().all(|text| {
-                            nodes.iter().any(|node| node["text"].as_str() == Some(text))
-                        }) {
+                        // A recomposed layout may reach the host before the runtime's
+                        // acknowledgement. Wait for both instead of assuming channel order.
+                        let acknowledged = after_generation.is_none_or(|previous| {
+                            self.runtime["generation"]
+                                .as_u64()
+                                .is_some_and(|current| current > previous)
+                        });
+                        if acknowledged
+                            && expected.iter().all(|text| {
+                                nodes.iter().any(|node| node["text"].as_str() == Some(text))
+                            })
+                        {
                             return Ok(payload);
                         }
                     }
@@ -285,7 +302,7 @@ pub fn run(options: Options) -> Result<()> {
         let noise = Noise::start(&workspace, options.background_noise_ms)?;
         let saved = Instant::now();
         fs::write(&cleanup.source, source)?;
-        host.snapshot(&["Count: 3", label], 120)?;
+        host.snapshot_after(&["Count: 3", label], 120, Some(previous_generation))?;
         let observed = Instant::now();
         let applied = host
             .applied_at
@@ -430,6 +447,60 @@ impl Drop for Noise {
                 Ok(Ok(())) => {}
                 result => eprintln!("Background noise failed: {result:?}"),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn measured_snapshot_waits_for_acknowledgement_in_either_message_order() {
+        for snapshot_first in [true, false] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("listener");
+            let stream =
+                TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
+            let (_peer, _) = listener.accept().expect("accept");
+            let (sender, messages) = mpsc::sync_channel(8);
+            let mut host = Host {
+                writer: Arc::new(Mutex::new(stream)),
+                messages,
+                frames: Arc::new(AtomicUsize::new(0)),
+                runtime: json!({"generation":0,"pid":42}),
+                applied_at: None,
+            };
+            let snapshot = json!({"nodes":[{"text":"edited"}]});
+            let now = Instant::now();
+            if snapshot_first {
+                sender
+                    .send(Ok((
+                        "cranpose.inspector.v2.snapshot".into(),
+                        snapshot.clone(),
+                        now,
+                    )))
+                    .expect("snapshot");
+                sender
+                    .send(Ok((
+                        "cranpose.dev.applied".into(),
+                        json!({"generation":0,"pid":42}),
+                        now,
+                    )))
+                    .expect("stale ack");
+            }
+            sender
+                .send(Ok((
+                    "cranpose.dev.applied".into(),
+                    json!({"generation":1,"pid":42}),
+                    now,
+                )))
+                .expect("ack");
+            sender
+                .send(Ok(("cranpose.inspector.v2.snapshot".into(), snapshot, now)))
+                .expect("snapshot");
+            host.snapshot_after(&["edited"], 1, Some(0))
+                .expect("confirmed snapshot");
+            assert_eq!(host.runtime["generation"], 1);
+            assert_eq!(host.applied_at, Some(now));
         }
     }
 }
