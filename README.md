@@ -74,6 +74,7 @@ crates from this repository. There is no dependency back on Studio.
 | `sdk/jvm-bridge` | JVM classfile generation in Rust |
 | `sdk/tools` | Packaging, SDK tests, native verification and release tools |
 | `sdk/ux` | Themes, searchable trees and change-only host message delivery |
+| `sdk/process` | [Owned process trees, bounded shutdown and cancellation](sdk/process/README.md) |
 | `sdk/watch` | Bounded, deduplicated file-change batches with quiet and maximum deadlines |
 
 The template disables Cargo project and stability features; applications opt in
@@ -91,6 +92,7 @@ incomplete changes. The crate uses only the Rust standard library.
 The shared `hot-smoke` tool can record `--measure-rounds N --report timings.json`.
 It measures source-save to runtime acknowledgement and to a matching inspector
 snapshot, while checking application PID, remembered state and error recovery.
+It also records shutdown latency and verifies that the runner, compiler and application exited.
 `--background-noise-ms N` writes ignored build output during fixture measurements.
 Snapshot observation has a 200 ms polling interval; acknowledgement timestamps
 are captured by the socket reader. Keep benchmarks separate from other builds.

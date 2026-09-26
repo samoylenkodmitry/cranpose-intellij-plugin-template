@@ -1,0 +1,20 @@
+[package]
+name = "cranpose-plugin-process"
+description = "Owned subprocess trees and bounded cancellation for Rust IDE plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["signal", "process"] }
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+[dev-dependencies]
+tempfile = "3"
+ctrlc = { version = "3", features = ["termination"] }
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+[lints.clippy]
+unwrap_used = "deny"

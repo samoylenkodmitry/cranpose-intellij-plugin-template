@@ -10,14 +10,17 @@ host-library = []
 [lib]
 crate-type = ["rlib"]
 [dependencies]
+cranpose-plugin-process = { path = "../process" }
 jni = "0.21.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 rand = "0.9"
 regex = "1"
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", features = ["signal", "process"] }
+
+[dev-dependencies]
+tempfile = "3"
+ctrlc = { version = "3", features = ["termination"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

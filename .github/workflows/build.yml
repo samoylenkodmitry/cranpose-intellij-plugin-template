@@ -11,6 +11,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  lifecycle:
+    name: Process lifecycle (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p cranpose-plugin-process -p cranpose-plugin-host --test lifecycle --test session_lifecycle
   native:
     name: Rust host and Cranpose UI (${{ matrix.platform }})
     strategy:
@@ -67,7 +79,7 @@ jobs:
           if-no-files-found: ignore
   plugin:
     name: Verified plugin (all platforms)
-    needs: [native, test]
+    needs: [native, test, lifecycle]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

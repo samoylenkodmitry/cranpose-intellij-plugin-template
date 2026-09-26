@@ -11,7 +11,7 @@ use std::{
     fs,
     net::{TcpListener, TcpStream},
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -48,7 +48,7 @@ pub struct Options {
     pub report: Option<PathBuf>,
 }
 struct Cleanup {
-    child: Child,
+    child: process::Process,
     source: PathBuf,
     original: String,
 }
@@ -57,8 +57,7 @@ impl Drop for Cleanup {
         if let Err(error) = fs::write(&self.source, &self.original) {
             eprintln!("Restore fixture: {error}");
         }
-        process::kill_tree(&mut self.child);
-        let _ = self.child.wait();
+        let _ = self.child.terminate(Duration::from_secs(2));
     }
 }
 struct Host {
@@ -239,10 +238,10 @@ pub fn run(options: Options) -> Result<()> {
     if let Some(dx) = options.dx {
         command.env("CRANPOSE_DX", dx.canonicalize()?);
     }
-    process::isolate(&mut command);
+
     let started = Instant::now();
     let mut cleanup = Cleanup {
-        child: command.spawn()?,
+        child: process::Process::spawn(command)?,
         source,
         original,
     };
@@ -363,16 +362,43 @@ pub fn run(options: Options) -> Result<()> {
         host.runtime["pid"] == pid,
         "Recovery restarted the application"
     );
+    let compiler_pid = fs::read_to_string(&options.log)?
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event["cranposeDev"] == "compiler")
+        .and_then(|event| event["pid"].as_u64())
+        .context("Missing compiler process identity")? as u32;
+    let pids = [
+        cleanup.child.id(),
+        compiler_pid,
+        pid.as_u64().context("application PID")? as u32,
+    ];
+    let stopped = Instant::now();
+    cleanup.child.terminate(Duration::from_secs(2))?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while pids.iter().any(|pid| process::is_running(*pid)) {
+        ensure!(
+            Instant::now() < deadline,
+            "Preview descendants survived shutdown: {pids:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let shutdown_ms = stopped.elapsed().as_secs_f64() * 1000.0;
     let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change",
         "startupMs":startup_ms, "backgroundNoiseMs":options.background_noise_ms,
-        "snapshotPollMs":200, "patches":timings});
+        "snapshotPollMs":200, "patches":timings, "shutdownMs":shutdown_ms, "stoppedPids":pids});
     if let Some(report) = options.report {
         fs::write(report, serde_json::to_vec_pretty(&result)?)?;
     }
     println!("{result}");
     Ok(())
 }
-fn wait_log(path: &std::path::Path, offset: u64, marker: &str, child: &mut Child) -> Result<()> {
+fn wait_log(
+    path: &std::path::Path,
+    offset: u64,
+    marker: &str,
+    child: &mut process::Process,
+) -> Result<()> {
     use std::io::{Read, Seek};
     let deadline = Instant::now() + Duration::from_secs(90);
     while Instant::now() < deadline {
