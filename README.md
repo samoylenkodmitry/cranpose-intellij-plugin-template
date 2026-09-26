@@ -64,10 +64,22 @@ repackaging and restarting the IDE.
 | `plugin/src/main/resources/META-INF/plugin.xml` | SDK extension registration |
 | `plugin/VERSION` | Plugin release version |
 
-The host and build tools are pinned Rust dependencies from
-[cranpose-idea](https://github.com/samoylenkodmitry/cranpose-idea).
-Their source is in `ide-host/`, `jvm-bridge/` and `xtask/` there.
-This template disables that plugin's Cargo dashboard and stability analysis.
+The reusable SDK is owned by this template. The example plugin uses local SDK crates;
+[Cranpose Studio](https://github.com/samoylenkodmitry/cranpose-idea) pins these same
+crates from this repository. There is no dependency back on Studio.
+
+| Shared crate | Purpose |
+|---|---|
+| `sdk/host` | JNI dispatch, native surfaces, lifecycle, editor and project integration |
+| `sdk/jvm-bridge` | JVM classfile generation in Rust |
+| `sdk/tools` | Packaging, SDK tests, native verification and release tools |
+| `sdk/ux` | Theme parsing, contrast-aware foregrounds and searchable tree models |
+
+The template disables Cargo project and stability features; applications opt in
+through `HostFeatures`. Plugin identity and checkout paths are explicit in each
+application's build entry point, so tools cannot accidentally package their SDK checkout.
+The UX crate has no Cranpose version dependency: its colors are converted at the
+UI boundary, and nightly framework compatibility checks still use one framework.
 
 ## Make it yours
 

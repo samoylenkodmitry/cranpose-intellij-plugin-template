@@ -1,0 +1,10 @@
+[package]
+name = "cranpose-jvm-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust-authored JVM class-file bridges for Cranpose IDE hosts"
+[lints]
+workspace = true
+[dev-dependencies]
+tempfile = "3"
