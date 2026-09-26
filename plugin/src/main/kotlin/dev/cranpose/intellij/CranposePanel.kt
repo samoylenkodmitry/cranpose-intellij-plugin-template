@@ -8,6 +8,7 @@ import java.awt.Point
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import javax.swing.SwingUtilities
 
 /**
@@ -73,13 +74,14 @@ class CranposePanel(
         }
 
         override fun onExit(error: Throwable?) {
-            if (live) exited(error)
+            if (live) exited(this, error)
         }
     }
 
     @Volatile
     private var session: CranposeSession? = null
 
+    @Volatile
     private var connection: Connection? = null
 
     @Volatile
@@ -120,6 +122,7 @@ class CranposePanel(
                 link.host = started.host
                 started.host.theme(dark)
                 SwingUtilities.invokeLater {
+                    if (!listener.live || connection !== listener) return@invokeLater
                     sendSize()
                     sendVisibility()
                     onConnected()
@@ -190,12 +193,18 @@ class CranposePanel(
         }
     }
 
-    private fun exited(error: Throwable?) {
-        closeSurfaces()
-        if (error != null) {
-            status = "Cranpose stopped: ${error.message}. Click to restart."
-            canvas.clear()
-            repaint()
+    private fun exited(exiting: Connection, error: Throwable?) {
+        try {
+            launcher.execute {
+                if (connection !== exiting) return@execute
+                stopSession()
+                status = if (error == null) "Cranpose stopped. Click to restart."
+                else "Cranpose stopped: ${error.message}. Click to restart."
+                canvas.clear()
+                repaint()
+            }
+        } catch (_: RejectedExecutionException) {
+            // close() already queued cleanup before shutting down the launcher.
         }
     }
 
@@ -212,9 +221,10 @@ class CranposePanel(
     private fun stopSession() {
         connection?.live = false
         connection = null
-        link.host = null
-        session?.close()
+        val previous = session
         session = null
+        link.host = null
+        previous?.close()
         closeSurfaces()
     }
 
