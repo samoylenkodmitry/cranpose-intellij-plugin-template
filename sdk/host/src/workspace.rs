@@ -35,6 +35,7 @@ struct State {
     candidate: Option<(i64, Arc<Panel>)>,
     placement: Value,
     checkpoint: Value,
+    viewport: [i32; 2],
 }
 impl Workspace {
     pub fn new(project: Arc<Project>, j: &mut J<'_>, source: O) -> Result<Arc<Self>> {
@@ -67,6 +68,7 @@ impl Workspace {
                 candidate: None,
                 placement: Value::Null,
                 checkpoint: Value::Null,
+                viewport: [0, 0],
             }),
             closed: AtomicBool::new(false),
         });
@@ -163,6 +165,7 @@ impl Workspace {
         let pending = {
             let mut state = self.state.lock().expect("workspace");
             state.ready = true;
+            state.viewport = [0, 0];
             std::mem::take(&mut state.pending)
         };
         let settings = serde_json::from_str::<Value>(&self.project.property(j, "cranpose.studio")?)
@@ -176,6 +179,7 @@ impl Workspace {
             )
         };
         self.studio.message("studio.init", &json!({"root":self.project.root,"cache":project::cache(j)?,"source":self.source_path,"settings":settings,"checkpoint":checkpoint,"activeSession":active,"candidateSession":candidate}).to_string());
+        self.layout(j)?;
         self.project.theme(j, &self.studio)?;
         self.project.publish();
         for payload in pending {
@@ -425,6 +429,20 @@ impl Workspace {
         };
         let width = j.int(component, "getWidth")?;
         let height = j.int(component, "getHeight")?;
+        let notify = {
+            let mut state = self.state.lock().expect("workspace");
+            let changed = state.ready && state.viewport != [width, height];
+            if changed {
+                state.viewport = [width, height];
+            }
+            changed
+        };
+        if notify {
+            self.studio.message(
+                "studio.viewport",
+                &json!({"width":width,"height":height}).to_string(),
+            );
+        }
         bounds(j, self.studio.primary.component(), 0, 0, width, height)?;
         let (child, placement) = {
             let state = self.state.lock().expect("workspace");
@@ -849,6 +867,27 @@ pub fn integration_test(project: Arc<Project>, j: &mut J<'_>) -> Result<()> {
         workspace.studio.restart(j)?;
         // Persisted width remains authoritative; other controller state comes from the checkpoint.
         wait_checkpoint(j)?;
+        for (width, expected_width, expected_top) in [(1024, 614.4, 88.0), (480, 480.0, 126.0)] {
+            bounds(j, workspace.component(), 0, 0, width, 620)?;
+            workspace.layout(j)?;
+            workspace.studio.primary.size(j)?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                workspace.studio.tick(j)?;
+                workspace.studio.send(Packet::new(13).int(0).byte(1));
+                let placement = workspace.state.lock().expect("workspace").placement.clone();
+                let actual_width = placement["viewport"]["width"].as_f64().unwrap_or_default();
+                let actual_top = placement["viewport"]["y"].as_f64().unwrap_or_default();
+                if (actual_width - expected_width).abs() < 1.0 && actual_top == expected_top {
+                    break;
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "Controller did not reflow at {width}px: {placement}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         let state = workspace.state.lock().expect("workspace");
         ensure!(
             state.checkpoint["selected"] == "retained-selection",
