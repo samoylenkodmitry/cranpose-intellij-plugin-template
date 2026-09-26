@@ -874,7 +874,7 @@ dependencies = [
 [[package]]
 name = "cranpose-ide-host"
 version = "0.1.0"
-source = "git+https://github.com/samoylenkodmitry/cranpose-idea?rev=443e05adbb5a64779602162d2e12e694bda13ec9#443e05adbb5a64779602162d2e12e694bda13ec9"
+source = "git+https://github.com/samoylenkodmitry/cranpose-idea?rev=486bd4b297e0b633920a720744e4b949711314a9#486bd4b297e0b633920a720744e4b949711314a9"
 dependencies = [
  "anyhow",
  "jni 0.21.1",
@@ -901,7 +901,7 @@ dependencies = [
 [[package]]
 name = "cranpose-jvm-bridge"
 version = "0.1.0"
-source = "git+https://github.com/samoylenkodmitry/cranpose-idea?rev=443e05adbb5a64779602162d2e12e694bda13ec9#443e05adbb5a64779602162d2e12e694bda13ec9"
+source = "git+https://github.com/samoylenkodmitry/cranpose-idea?rev=486bd4b297e0b633920a720744e4b949711314a9#486bd4b297e0b633920a720744e4b949711314a9"
 
 [[package]]
 name = "cranpose-liquid"
@@ -4892,7 +4892,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 [[package]]
 name = "xtask"
 version = "0.1.0"
-source = "git+https://github.com/samoylenkodmitry/cranpose-idea?rev=443e05adbb5a64779602162d2e12e694bda13ec9#443e05adbb5a64779602162d2e12e694bda13ec9"
+source = "git+https://github.com/samoylenkodmitry/cranpose-idea?rev=486bd4b297e0b633920a720744e4b949711314a9#486bd4b297e0b633920a720744e4b949711314a9"
 dependencies = [
  "anyhow",
  "clap",

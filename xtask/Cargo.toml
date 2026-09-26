@@ -7,4 +7,4 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-cranpose-ide-tools = { package = "xtask", git = "https://github.com/samoylenkodmitry/cranpose-idea", rev = "443e05adbb5a64779602162d2e12e694bda13ec9" }
+cranpose-ide-tools = { package = "xtask", git = "https://github.com/samoylenkodmitry/cranpose-idea", rev = "486bd4b297e0b633920a720744e4b949711314a9" }

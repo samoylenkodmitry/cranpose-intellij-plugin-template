@@ -1,4 +1,4 @@
-<idea-plugin>
+<idea-plugin require-restart="true">
     <id>dev.cranpose.intellij.template</id>
     <name>Cranpose Tool Window</name>
     <vendor url="https://github.com/samoylenkodmitry/cranpose">Cranpose</vendor>
