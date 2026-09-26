@@ -4,7 +4,7 @@ fn main() -> anyhow::Result<()> {
             .parent()
             .expect("workspace")
             .to_path_buf(),
-        plugin_id: "dev.cranpose.intellij.template".into(),
+        plugin_id: "dev.cranpose.toolwindow".into(),
         directory: "cranpose-template".into(),
         host_package: "cranpose-template-host".into(),
     })
