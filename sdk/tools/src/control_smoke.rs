@@ -173,8 +173,57 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
         let view = verify_text(&host, "Reset")?;
         click(&host, &view, "Reset")?;
         expect_edit(&host, "1,0,0,1")?;
+        // The hex label is only a display representation. Opening, applying,
+        // resetting or changing opacity must not quantize the source RGB.
+        let precise = "0.19,0.42,0.31,0.123456789";
+        host.send(Packet::message(
+            "ide.authoring.control",
+            &json!({"literal":{"kind":"color","value":precise}}).to_string(),
+        ))?;
+        let view = verify_text(&host, "#306B4F1F")?;
+        click(&host, &view, "Apply")?;
+        expect_edit(&host, precise)?;
+        for (label, fraction, expected) in [
+            ("Opacity", 0.5, "0.19,0.42,0.31,0.5"),
+            ("Hue", 0.75, "0.305,0.19,0.42,0.5"),
+            ("Opacity", 0.25, "0.305,0.19,0.42,0.25"),
+        ] {
+            let view = verify_text(&host, label)?;
+            let node = text_node(&view, label).context("color track label")?;
+            let y = node["y"].as_f64().context("y")? as f32
+                + node["height"].as_f64().context("height")? as f32
+                + 18.0;
+            let x = 24.0 + 352.0 * fraction;
+            for kind in [3, 4] {
+                host.send(Packet::new(kind).int(0).float(x).float(y))?;
+                expect_edit(&host, expected)?;
+            }
+            let view = verify_text(&host, "Apply")?;
+            click(&host, &view, "Apply")?;
+            expect_edit(&host, expected)?;
+        }
+        let view = verify_text(&host, "Reset")?;
+        click(&host, &view, "Reset")?;
+        expect_edit(&host, precise)?;
+        click(&host, &view, "Apply")?;
+        expect_edit(&host, precise)?;
+        pointer(&host, 70.0, 66.0)?;
+        key(&host, "KeyA", select_all_modifier)?;
+        host.send(Packet::new(8).int(0).text("#12"))?;
+        let view = verify_text(&host, "Apply")?;
+        click(&host, &view, "Apply")?;
+        let view = verify_text(&host, "Enter #RRGGBB or #RRGGBBAA")?;
+        click(&host, &view, "Reset")?;
+        expect_edit(&host, precise)?;
+        pointer(&host, 70.0, 66.0)?;
+        key(&host, "KeyA", select_all_modifier)?;
+        host.send(Packet::new(8).int(0).text("#12345678"))?;
+        let view = verify_text(&host, "Apply")?;
+        click(&host, &view, "Apply")?;
+        expect_edit(&host, "0.070588,0.203922,0.337255,0.470588")?;
         // Exclude inspector requests and active text-caret blinking from the
-        // settled observation. The last action focused a non-text control.
+        // settled observation. Apply can retain the field's keyboard focus.
+        host.send(Packet::new(13).int(0).byte(0))?;
         thread::sleep(Duration::from_secs(2));
         let before = host.frames.load(std::sync::atomic::Ordering::Relaxed);
         thread::sleep(Duration::from_secs(2));
@@ -186,7 +235,7 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             "Control descendants survived shutdown"
         );
         checks.push(
-            json!({"scale":scale,"applyWithSelectionMenu":true,"resetWithSelectionMenu":true,"typedControls":typed,"customRangeDrag":true,"colorDrag":true,"settledColorFrames":idle}),
+            json!({"scale":scale,"applyWithSelectionMenu":true,"resetWithSelectionMenu":true,"typedControls":typed,"customRangeDrag":true,"colorDrag":true,"colorPrecision":true,"settledColorFrames":idle}),
         );
     }
     Ok(json!({"pointerControls":checks}))
