@@ -440,18 +440,22 @@ impl Workspace {
                         channel,
                         "cranpose.dev.values.result" | "cranpose.dev.composed"
                     ) {
-                        let rejected = {
+                        let (rejected, trace) = {
                             let mut state = workspace.state.lock().expect("workspace");
                             let rejected = state.active.as_ref().is_some_and(|a| a.0 == id)
                                 && state
                                     .trace
                                     .as_mut()
                                     .is_some_and(|t| t.message(channel, payload));
+                            let trace = state.trace.clone();
                             if rejected {
                                 state.trace = None;
                             }
-                            rejected
+                            (rejected, trace)
                         };
+                        if let Some(trace) = trace {
+                            trace.log(j, channel, payload)?;
+                        }
                         if rejected {
                             crate::feedback::stop(&workspace.project, j)?;
                         }

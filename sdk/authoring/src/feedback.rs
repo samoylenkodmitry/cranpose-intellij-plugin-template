@@ -86,19 +86,28 @@ impl ViewTarget {
         let suffix = format!("/{}", file.replace('\\', "/"));
         let mut matches = snapshot.nodes.into_iter().filter(|node| {
             (!self.text || (node.kind == "Text" && self.matches(&node.text)))
-                && node.sources.iter().any(|s| {
-                    let source_file = s.file.replace('\\', "/");
-                    let path = if source_file.starts_with('/') || s.manifest_dir.is_empty() {
-                        source_file
-                    } else {
-                        format!("{}/{}", s.manifest_dir.replace('\\', "/"), source_file)
-                    };
-                    self.calls.iter().any(|(name, line)| {
-                        s.name == format!("__cranpose_call:{name}")
-                            && *line == s.line
-                            && (self.text || node.kind == *name)
-                    }) && (path == file.replace('\\', "/") || path.ends_with(&suffix))
-                })
+                && node
+                    .sources
+                    .iter()
+                    .rev()
+                    .filter(|s| {
+                        self.text
+                            || s.name.strip_prefix("__cranpose_call:") == Some(node.kind.as_str())
+                    })
+                    .take(if self.text { usize::MAX } else { 1 })
+                    .any(|s| {
+                        let source_file = s.file.replace('\\', "/");
+                        let path = if source_file.starts_with('/') || s.manifest_dir.is_empty() {
+                            source_file
+                        } else {
+                            format!("{}/{}", s.manifest_dir.replace('\\', "/"), source_file)
+                        };
+                        self.calls.iter().any(|(name, line)| {
+                            s.name == format!("__cranpose_call:{name}")
+                                && *line == s.line
+                                && (self.text || node.kind == *name)
+                        }) && (path == file.replace('\\', "/") || path.ends_with(&suffix))
+                    })
                 && [node.x, node.y, node.width, node.height]
                     .iter()
                     .all(|v| v.is_finite())
@@ -263,5 +272,25 @@ mod tests {
             s["nodes"].as_array_mut().expect("nodes").push(duplicate);
             assert!(t.bounds("src/main.rs", &s.to_string(), 9).is_none());
         }
+    }
+    #[test]
+    fn numeric_container_does_not_match_descendants_with_inherited_provenance() {
+        let t = target(
+            "#[composable]\nfn Card(){ Column(12.0, || {\nColumn(8.0, || {});\n}); }",
+            "12.0",
+        );
+        let mut s = snapshot("", 2);
+        s["nodes"][0]["kind"] = json!("Column");
+        s["nodes"][0]["sources"][0]["name"] = json!("__cranpose_call:Column");
+        let mut child = s["nodes"][0].clone();
+        child["sources"]
+            .as_array_mut()
+            .expect("sources")
+            .push(json!({"name":"__cranpose_call:Column","file":"src/main.rs","line":3}));
+        s["nodes"].as_array_mut().expect("nodes").push(child);
+        assert_eq!(
+            t.bounds("src/main.rs", &s.to_string(), 9),
+            Some([20.0, 30.0, 80.0, 24.0])
+        );
     }
 }

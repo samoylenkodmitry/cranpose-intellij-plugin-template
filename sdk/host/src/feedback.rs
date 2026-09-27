@@ -40,6 +40,29 @@ pub struct Trace {
     attempts: usize,
 }
 impl Trace {
+    pub fn log(&self, j: &mut J<'_>, stage: &str, detail: &str) -> Result<()> {
+        if j.static_call(
+            "java/lang/Boolean",
+            "getBoolean",
+            "(Ljava/lang/String;)Z",
+            &[A::S("cranpose.trace.edits")],
+        )?
+        .z()?
+        {
+            let logger = j.static_obj(
+                "com/intellij/openapi/diagnostic/Logger",
+                "getInstance",
+                "(Ljava/lang/String;)Lcom/intellij/openapi/diagnostic/Logger;",
+                &[A::S("dev.cranpose.feedback")],
+            )?;
+            let message = format!(
+                "CRANPOSE_EDIT_STAGE {}",
+                json!({"stage":stage,"detail":detail,"revision":self.revision,"elapsedMs":self.edit.started.elapsed().as_secs_f64()*1000.0,"generation":self.generation,"composed":self.composed.is_some(),"lines":self.target.lines})
+            );
+            j.void(&logger, "info", "(Ljava/lang/String;)V", &[A::S(&message)])?;
+        }
+        Ok(())
+    }
     pub fn follows(&self, frame: Instant) -> bool {
         self.composed.is_some_and(|composed| frame >= composed)
     }
