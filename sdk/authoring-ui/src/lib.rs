@@ -88,7 +88,12 @@ pub fn EditorDecorations() {
             BoxSpec::default(),
             move || {
                 for (index, item) in items.get().into_iter().take(256).enumerate() {
-                    cranpose::key(index, move || {
+                    let identity = format!(
+                        "{}:{}",
+                        item["kind"],
+                        item["anchor"].as_u64().unwrap_or(index as u64)
+                    );
+                    cranpose::key(identity, move || {
                         let n = |key: &str| item[key].as_f64().unwrap_or_default() as f32;
                         let (x, y, w, h) = (n("x"), n("y"), n("width"), n("height"));
                         if item["kind"] == "arrival" {
@@ -112,20 +117,12 @@ pub fn EditorDecorations() {
                             );
                         } else if item["kind"] == "color" {
                             if let Some(c) = item["value"].as_str().and_then(design::parse_color) {
-                                UiBox(
+                                design::InlineColor(
                                     Modifier::empty()
-                                        .offset(x + 2.0, y + (h - 10.0) * 0.5)
-                                        .width(10.0)
-                                        .height(10.0)
-                                        .rounded_corners(3.0)
-                                        .background(Color(
-                                            c[0] as f32,
-                                            c[1] as f32,
-                                            c[2] as f32,
-                                            1.0,
-                                        )),
-                                    BoxSpec::default(),
-                                    || {},
+                                        .offset(x + 1.0, y + (h - 12.0) * 0.5)
+                                        .width(12.0)
+                                        .height(12.0),
+                                    c,
                                 );
                             }
                         } else if item["kind"] == "call" {
@@ -191,13 +188,16 @@ pub fn EditorDecorations() {
     });
 }
 
-fn submit(text: &str) {
-    let _ = send_to_host("ide.authoring.edit", &json!({"value":text}).to_string());
-}
-fn seek(text: &str, gesture: u64) {
+fn submit(text: &str, request: u64) {
     let _ = send_to_host(
         "ide.authoring.edit",
-        &json!({"value":text,"gesture":gesture}).to_string(),
+        &json!({"value":text,"request":request}).to_string(),
+    );
+}
+fn seek(text: &str, gesture: u64, request: u64) {
+    let _ = send_to_host(
+        "ide.authoring.edit",
+        &json!({"value":text,"gesture":gesture,"request":request}).to_string(),
     );
 }
 #[composable]
@@ -207,41 +207,57 @@ fn ControlButton(label: &'static str, _colors: Colors, action: impl Fn() + Clone
 /// Undoable source edits are performed by the host. The control never writes files.
 #[composable]
 pub fn ValueControl() {
-    let colors = rememberColors();
-    let kind = rememberMutableStateOf(String::new);
-    let suffix = rememberMutableStateOf(String::new);
-    let field = remember(|| TextFieldState::new("")).with(|v| *v);
-    let original = rememberMutableStateOf(String::new);
-    let color = rememberMutableStateOf(|| color::ColorDraft::new("0,0,0,1").expect("opaque black"));
-    let message = rememberMutableStateOf(|| "Applies to source · Undo in the editor".to_owned());
-    let ready = rememberMutableStateOf(|| false);
+    let control = rememberMutableStateOf(|| None::<String>);
     CollectEvents(
         rememberHostMessages("ide.authoring.control"),
         (),
         move |payload: String| {
-            if let Ok(v) = serde_json::from_str::<Value>(&payload) {
-                let literal = &v["literal"];
-                let text = literal["value"].as_str().unwrap_or_default();
-                field.set_text(if literal["kind"] == "color" {
-                    let draft = color::ColorDraft::new(text).unwrap_or_else(|| color.get());
-                    let display = draft.text.clone();
-                    color.set(draft);
-                    display
-                } else {
-                    text.into()
-                });
-                original.set(text.into());
-                kind.set(literal["kind"].as_str().unwrap_or_default().into());
-                suffix.set(literal["suffix"].as_str().unwrap_or_default().into());
-                ready.set(true);
+            if serde_json::from_str::<Value>(&payload).is_ok() {
+                control.set(Some(payload));
             }
         },
     );
+    if let Some(payload) = control.get() {
+        cranpose::key(payload.clone(), move || {
+            if let Ok(init) = serde_json::from_str::<Value>(&payload) {
+                ControlForm(init);
+            }
+        });
+    }
+}
+
+#[composable]
+fn ControlForm(init: Value) {
+    let colors = rememberColors();
+    let request = init["request"].as_u64().unwrap_or_default();
+    let literal = &init["literal"];
+    let text = literal["value"].as_str().unwrap_or_default().to_owned();
+    let kind_text = literal["kind"].as_str().unwrap_or_default().to_owned();
+    let suffix_text = literal["suffix"].as_str().unwrap_or_default().to_owned();
+    let draft = color::ColorDraft::new(&text)
+        .unwrap_or_else(|| color::ColorDraft::new("0,0,0,1").expect("opaque black"));
+    let display = if kind_text == "color" {
+        draft.text.clone()
+    } else {
+        text.clone()
+    };
+    let kind = rememberMutableStateOf(move || kind_text);
+    let suffix = rememberMutableStateOf(move || suffix_text);
+    let field = remember(move || TextFieldState::new(&display)).with(|v| *v);
+    let original = rememberMutableStateOf(move || text);
+    let color = rememberMutableStateOf(move || draft);
+    let message = rememberMutableStateOf(|| "Applies to source · Undo in the editor".to_owned());
+    let binding_text = init["binding"].as_str().map(str::to_owned);
+    let binding = rememberMutableStateOf(move || binding_text);
+    let line = literal["range"]["line"].as_u64().unwrap_or_default();
     CollectEvents(
         rememberHostMessages("ide.authoring.result"),
         (),
         move |payload: String| {
             if let Ok(v) = serde_json::from_str::<Value>(&payload) {
+                if v["request"].as_u64().unwrap_or_default() != request {
+                    return;
+                }
                 message.set(if v["ok"] == true {
                     "Source updated · Undo in the editor".into()
                 } else {
@@ -255,116 +271,134 @@ pub fn ValueControl() {
     );
     // Text controls commit explicitly, preventing incomplete numeric input from
     // replacing valid source. Steppers and toggles commit each complete value.
-    Column(
+    UiBox(
         Modifier::empty()
             .fill_max_size()
-            .background(colors.background)
-            .padding(16.0),
-        ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(12.0)),
+            .background(colors.background),
+        BoxSpec::default(),
         move || {
-            Row(
-                Modifier::empty().fill_max_width(),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::SpaceBetween),
+            design::ControlGlass(colors.accent);
+            Column(
+                Modifier::empty().fill_max_size().padding(16.0),
+                ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(12.0)),
                 move || {
-                    Text(
-                        if kind.get() == "color" {
-                            "Live color"
-                        } else {
-                            "◆  Live value"
-                        },
-                        Modifier::empty(),
-                        style(colors.text, 15.0),
-                    );
-                    Text(kind.get(), Modifier::empty(), style(colors.muted, 11.0));
-                },
-            );
-            BasicTextField(
-                field,
-                Modifier::empty()
-                    .fill_max_width()
-                    .height(38.0)
-                    .rounded_corners(6.0)
-                    .background(colors.surface)
-                    .padding(9.0),
-                style(colors.text, 14.0),
-            );
-            let current_kind = kind.get();
-            if current_kind == "color" {
-                design::ColorControls(field, color, colors);
-            } else if matches!(current_kind.as_str(), "int" | "float") {
-                cranpose::key(current_kind.clone(), move || {
-                    design::NumberControls(field, current_kind == "int", suffix.get(), colors)
-                });
-            }
-            // Keep editor actions below the field's floating selection menu.
-            // Weight absorbs spare height without moving the field or its caret.
-            UiBox(
-                Modifier::empty().columnWeight(1.0, true),
-                BoxSpec::default(),
-                || {},
-            );
-            Row(
-                Modifier::empty().fill_max_width(),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
-                move || {
-                    match kind.get().as_str() {
-                        "int" | "float" => {
-                            for (label, step) in [("−", -1.0), ("+", 1.0)] {
-                                ControlButton(label, colors, move || {
-                                    if let Some(value) =
-                                        step_value(&field.text(), &kind.get(), step)
-                                    {
-                                        field.set_text(&value);
-                                        submit(&value);
-                                    }
-                                });
-                            }
-                        }
-                        "bool" => ControlButton("Toggle", colors, move || {
-                            let value = if field.text() == "true" {
-                                "false"
-                            } else {
-                                "true"
-                            };
-                            field.set_text(value);
-                            submit(value);
-                        }),
-                        _ => {}
-                    }
-                    ControlButton("Apply", colors, move || {
-                        if ready.get() {
-                            if kind.get() == "color" {
-                                let mut draft = color.get();
-                                if draft.sync_text(&field.text()).is_some() {
-                                    submit(&draft.source);
-                                    color.set(draft);
+                    Row(
+                        Modifier::empty().fill_max_width(),
+                        RowSpec::default().horizontal_arrangement(LinearArrangement::SpaceBetween),
+                        move || {
+                            Text(
+                                if kind.get() == "color" {
+                                    "Live color"
                                 } else {
-                                    message.set("Enter #RRGGBB or #RRGGBBAA".into());
-                                }
-                            } else {
-                                submit(&field.text());
-                            }
-                        }
-                    });
-                    ControlButton("Reset", colors, move || {
-                        let text = original.get();
-                        field.set_text(if kind.get() == "color" {
-                            let draft =
-                                color::ColorDraft::new(&text).unwrap_or_else(|| color.get());
-                            let display = draft.text.clone();
-                            color.set(draft);
-                            display
-                        } else {
-                            text.clone()
+                                    "◆  Live value"
+                                },
+                                Modifier::empty(),
+                                style(colors.text, 15.0),
+                            );
+                            Text(
+                                binding
+                                    .get()
+                                    .as_ref()
+                                    .map_or_else(|| kind.get(), |name| format!("{name} · L{line}")),
+                                Modifier::empty(),
+                                style(colors.muted, 11.0),
+                            );
+                        },
+                    );
+                    BasicTextField(
+                        field,
+                        Modifier::empty()
+                            .fill_max_width()
+                            .height(38.0)
+                            .rounded_corners(6.0)
+                            .background(colors.surface)
+                            .padding(9.0),
+                        style(colors.text, 14.0),
+                    );
+                    let current_kind = kind.get();
+                    if current_kind == "color" {
+                        design::ColorControls(field, color, colors, request);
+                    } else if matches!(current_kind.as_str(), "int" | "float") {
+                        cranpose::key(current_kind.clone(), move || {
+                            design::NumberControls(
+                                field,
+                                current_kind == "int",
+                                suffix.get(),
+                                colors,
+                                request,
+                            )
                         });
-                        submit(&text);
-                    });
+                    }
+                    // Keep editor actions below the field's floating selection menu.
+                    // Weight absorbs spare height without moving the field or its caret.
+                    UiBox(
+                        Modifier::empty().columnWeight(1.0, true),
+                        BoxSpec::default(),
+                        || {},
+                    );
+                    Row(
+                        Modifier::empty().fill_max_width(),
+                        RowSpec::default()
+                            .horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                        move || {
+                            match kind.get().as_str() {
+                                "int" | "float" => {
+                                    for (label, step) in [("−", -1.0), ("+", 1.0)] {
+                                        ControlButton(label, colors, move || {
+                                            if let Some(value) =
+                                                step_value(&field.text(), &kind.get(), step)
+                                            {
+                                                field.set_text(&value);
+                                                submit(&value, request);
+                                            }
+                                        });
+                                    }
+                                }
+                                "bool" => ControlButton("Toggle", colors, move || {
+                                    let value = if field.text() == "true" {
+                                        "false"
+                                    } else {
+                                        "true"
+                                    };
+                                    field.set_text(value);
+                                    submit(value, request);
+                                }),
+                                _ => {}
+                            }
+                            ControlButton("Apply", colors, move || {
+                                if kind.get() == "color" {
+                                    let mut draft = color.get();
+                                    if draft.sync_text(&field.text()).is_some() {
+                                        submit(&draft.source, request);
+                                        color.set(draft);
+                                    } else {
+                                        message.set("Enter #RRGGBB or #RRGGBBAA".into());
+                                    }
+                                } else {
+                                    submit(&field.text(), request);
+                                }
+                            });
+                            ControlButton("Reset", colors, move || {
+                                let text = original.get();
+                                field.set_text(if kind.get() == "color" {
+                                    let draft = color::ColorDraft::new(&text)
+                                        .unwrap_or_else(|| color.get());
+                                    let display = draft.text.clone();
+                                    color.set(draft);
+                                    display
+                                } else {
+                                    text.clone()
+                                });
+                                submit(&text, request);
+                            });
+                        },
+                    );
+                    Text(
+                        message.get(),
+                        Modifier::empty().fill_max_width(),
+                        style(colors.muted, 11.0),
+                    );
                 },
-            );
-            Text(
-                message.get(),
-                Modifier::empty().fill_max_width(),
-                style(colors.muted, 11.0),
             );
         },
     );

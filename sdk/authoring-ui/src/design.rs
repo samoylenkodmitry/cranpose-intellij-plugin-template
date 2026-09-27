@@ -212,10 +212,23 @@ fn hsv_rgb(h: vec3<f32>) -> vec3<f32> {
         return vec4<f32>(mix(vec3<f32>(checker),rgb,alpha)*mask,mask);
     }
     let t=u[1u].y;
-    let beam=exp(-pow((p.x-t*1.4+0.2)*5.0,2.0));
-    let edge=smoothstep(0.0,0.04,p.x)*(1.0-smoothstep(0.88,1.0,p.x));
-    alpha=alpha*(1.0-t)*edge*(0.25+beam*0.75);
-    rgb=mix(rgb,vec3<f32>(0.65,0.85,1.0),beam*0.6);
+    let sweep=p.x-t*1.55+0.25;
+    let beam=exp(-pow(sweep*9.0,2.0));
+    let spectrum=0.55+0.45*cos(vec3<f32>(0.0,2.1,4.2)+p.x*5.0+p.y*1.4-t*4.0);
+    let ray=pow(max(0.0,cos(p.y*15.0+sweep*28.0)),12.0)*beam;
+    let edge=smoothstep(0.0,0.02,p.x)*(1.0-smoothstep(0.92,1.0,p.x));
+    let rails=exp(-min(p.y,1.0-p.y)*35.0);
+    let trail=exp(-pow((sweep+0.16)*4.0,2.0));
+    if mode == 6.0 {
+        // Quiet glass at rest; a spectral border blooms on entrance and press.
+        let border=exp(-min(min(pixel.x,size.x-pixel.x),min(pixel.y,size.y-pixel.y))*0.8);
+        alpha=alpha*(0.10+border*0.65+(beam+ray)*0.16*(1.0-t));
+        rgb=mix(rgb,spectrum,0.32+border*0.3);
+    } else {
+        alpha=alpha*(1.0-t)*edge*(0.16*trail+beam*0.7+ray*0.4+rails*(beam+trail)*0.9);
+        rgb=mix(rgb,spectrum,0.65);
+        rgb=mix(rgb,vec3<f32>(0.9,0.98,1.0),beam*rails*0.85);
+    }
     return vec4<f32>(rgb*alpha,alpha);
 }";
 fn effect(color: Color, mode: f32, progress: f32, hsv: [f64; 4]) -> RenderEffect {
@@ -245,17 +258,64 @@ fn layer(effect: RenderEffect) -> GraphicsLayer {
 }
 
 /// A bounded source-arrival sweep. Key the composition by navigation request
-/// to restart it; no frame clock runs after its 700 ms transition completes.
+/// to restart it; no frame clock runs after its 900 ms transition completes.
 #[composable]
 pub fn ArrivalAccent(modifier: Modifier, color: Color) {
     let progress = animate_float_as_state_with_initial(
         0.0,
         1.0,
-        tween(700, Easing::FastOutSlowInEasing),
+        tween(900, Easing::FastOutSlowInEasing),
         "source arrival",
     );
     UiBox(
         modifier.graphics_layer_value(layer(effect(color, 5.0, progress.value(), [0.0; 4]))),
+        BoxSpec::default(),
+        || {},
+    );
+}
+
+/// Entrance glass is keyed to the control session, never to scrolling geometry.
+#[composable]
+pub(crate) fn ControlGlass(color: Color) {
+    let progress = animate_float_as_state_with_initial(
+        0.0,
+        1.0,
+        tween(500, Easing::FastOutSlowInEasing),
+        "control entrance",
+    );
+    UiBox(
+        Modifier::empty()
+            .fill_max_size()
+            .rounded_corners(10.0)
+            .graphics_layer_value(layer(effect(
+                Color(color.0, color.1, color.2, 0.32),
+                6.0,
+                progress.value(),
+                [0.0; 4],
+            ))),
+        BoxSpec::default(),
+        || {},
+    );
+}
+
+#[composable]
+pub(crate) fn InlineColor(modifier: Modifier, color: [f64; 4]) {
+    let channel = |value: f64| {
+        animateFloatAsState(
+            value as f32,
+            tween(160, Easing::FastOutSlowInEasing),
+            "inline color",
+        )
+        .value()
+    };
+    let c = Color(
+        channel(color[0]),
+        channel(color[1]),
+        channel(color[2]),
+        channel(color[3]),
+    );
+    UiBox(
+        modifier.graphics_layer_value(layer(effect(c, 0.0, 0.0, [0.0; 4]))),
         BoxSpec::default(),
         || {},
     );
@@ -327,7 +387,7 @@ pub(crate) fn Seekbar(
                         .width(scope.track_extent() * value)
                         .height(8.0)
                         .rounded_corners(4.0)
-                        .background(colors.accent),
+                        .graphics_layer_value(layer(accent_effect(colors.accent))),
                     BoxSpec::default(),
                     || {},
                 );
@@ -362,7 +422,13 @@ pub(crate) fn Seekbar(
 }
 
 #[composable]
-pub(crate) fn NumberControls(field: TextFieldState, integer: bool, suffix: String, colors: Colors) {
+pub(crate) fn NumberControls(
+    field: TextFieldState,
+    integer: bool,
+    suffix: String,
+    colors: Colors,
+    request: u64,
+) {
     let bounds = NumberRange::bounds(&suffix);
     let range =
         rememberMutableStateOf(move || NumberRange::around(&field.text(), integer, &suffix));
@@ -409,7 +475,7 @@ pub(crate) fn NumberControls(field: TextFieldState, integer: bool, suffix: Strin
                         let value = range.get().at(fraction, integer);
                         if field.text() != value {
                             field.set_text(&value);
-                            seek(&value, gesture.get());
+                            seek(&value, gesture.get(), request);
                         }
                     },
                     move || gesture.set(gesture.get().wrapping_add(1)),
@@ -473,6 +539,7 @@ pub(crate) fn ColorControls(
     field: TextFieldState,
     draft: cranpose_core::MutableState<super::color::ColorDraft>,
     colors: Colors,
+    request: u64,
 ) {
     let mut next = draft.get();
     if next.sync_text(&field.text()) == Some(true) {
@@ -519,7 +586,7 @@ pub(crate) fn ColorControls(
                             let mut next = draft.get();
                             next.seek(index, fraction);
                             field.set_text(&next.text);
-                            seek(&next.source, gesture.get());
+                            seek(&next.source, gesture.get(), request);
                             draft.set(next);
                         },
                         move || gesture.set(gesture.get().wrapping_add(1)),
