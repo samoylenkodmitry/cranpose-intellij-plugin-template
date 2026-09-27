@@ -1,7 +1,9 @@
 //! Publish generated files once, preserving Cargo fingerprints on later launches.
 mod derived;
+mod lease;
 use anyhow::{Context, Result, ensure};
 pub use derived::DerivedFile;
+pub use lease::WorkspaceLease;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,

@@ -14,7 +14,14 @@ fn graceful_stop_covers_compiler_and_application() {
     let started = Instant::now();
     process.terminate(Duration::from_secs(2)).expect("shutdown");
     assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        process
+            .wait_for_tree_exit(Duration::from_secs(1))
+            .expect("scope exit")
+    );
     support::exited(directory.path());
+    #[cfg(unix)]
+    assert!(directory.path().join("shared-scope-exited").exists());
 }
 #[test]
 fn stubborn_descendants_are_forced_after_bounded_grace() {
@@ -27,6 +34,11 @@ fn stubborn_descendants_are_forced_after_bounded_grace() {
         .terminate(Duration::from_millis(100))
         .expect("force-stop");
     assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        process
+            .wait_for_tree_exit(Duration::from_secs(1))
+            .expect("scope exit")
+    );
     support::exited(directory.path());
 }
 #[test]
@@ -37,6 +49,11 @@ fn abruptly_killed_runner_still_has_owned_descendants() {
     support::ready(directory.path());
     process.kill().expect("abrupt runner exit");
     process.terminate(Duration::ZERO).expect("cleanup");
+    assert!(
+        process
+            .wait_for_tree_exit(Duration::from_secs(1))
+            .expect("scope exit")
+    );
     support::exited(directory.path());
 }
 #[test]
@@ -140,4 +157,53 @@ fn shutdown_latency_benchmark() {
             assert_eq!(survivors, if mode == "legacy" { 2 } else { 0 });
         }
     }
+}
+
+#[test]
+fn live_scope_observation_has_a_bounded_wait() {
+    let directory = tempfile::tempdir().expect("fixture");
+    let mut process =
+        Process::spawn(support::command(directory.path(), "root", "stubborn")).expect("root");
+    support::ready(directory.path());
+    let started = Instant::now();
+    assert!(
+        !process
+            .wait_for_tree_exit(Duration::from_millis(40))
+            .expect("observe live scope")
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    process.terminate(Duration::ZERO).expect("cleanup");
+    assert!(
+        process
+            .wait_for_tree_exit(Duration::from_secs(1))
+            .expect("scope exited")
+    );
+    support::exited(directory.path());
+}
+
+#[test]
+fn exited_parent_does_not_make_a_live_descendant_scope_reusable() {
+    let directory = tempfile::tempdir().expect("fixture");
+    let mut process =
+        Process::spawn(support::command(directory.path(), "root", "parent-exit")).expect("root");
+    support::ready(directory.path());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while process.try_wait().expect("parent status").is_none() {
+        assert!(Instant::now() < deadline, "parent did not exit");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !process
+            .wait_for_tree_exit(Duration::from_millis(40))
+            .expect("remaining descendants")
+    );
+    process
+        .terminate(Duration::ZERO)
+        .expect("stop remaining descendants");
+    assert!(
+        process
+            .wait_for_tree_exit(Duration::from_secs(1))
+            .expect("scope exited")
+    );
+    support::exited(directory.path());
 }

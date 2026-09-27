@@ -47,3 +47,11 @@ It cleans the deliberately orphaned legacy fixtures before asserting results.
 These are lifecycle overhead measurements, not compiler or UI startup timings.
 The shared `hot-smoke` tool separately records real preview `shutdownMs` and the
 runner, compiler and application PIDs it verified had exited.
+
+`wait_for_tree_exit(timeout)` observes completion after shutdown before reusing
+resources such as a private compiler workspace. It checks process-group membership
+on macOS/Linux and the Job's active process count on Windows. A shared Unix worker
+excludes its still-running owner. The wait is bounded and returns false if another
+process remains; callers must abandon the workspace on false or observation error.
+A regression fixture exits its parent while descendants remain alive to prove that
+parent exit alone cannot authorize reuse.

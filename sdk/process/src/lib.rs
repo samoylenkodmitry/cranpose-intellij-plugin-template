@@ -113,6 +113,63 @@ impl Process {
         }
     }
 
+    /// After stopping a child, confirm that no processes still use its scope.
+    /// Shared Unix workers exclude this runner, which still holds its cache lease.
+    /// This only observes processes. A false result means callers must abandon
+    /// reusable resources instead of making them available to another session.
+    pub fn wait_for_tree_exit(&mut self, timeout: Duration) -> io::Result<bool> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.child.try_wait()?.is_some() && self.scope_empty()? {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())));
+        }
+    }
+    fn scope_empty(&self) -> io::Result<bool> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            use libproc::processes::{ProcFilter, pids_by_type};
+            let group = if self.group {
+                self.child.id()
+            } else {
+                nix::unistd::getpgrp().as_raw() as u32
+            };
+            let owner = std::process::id();
+            let pids = match pids_by_type(ProcFilter::ByProgramGroup { pgrpid: group }) {
+                Ok(pids) => pids,
+                Err(error) => {
+                    // macOS libproc may report stale errno when the last process
+                    // exits during enumeration. Confirm absence independently;
+                    // permission errors or an existing group stay conservative.
+                    if nix::sys::signal::killpg(nix::unistd::Pid::from_raw(group as i32), None)
+                        == Err(nix::errno::Errno::ESRCH)
+                    {
+                        return Ok(true);
+                    }
+                    return Err(error);
+                }
+            };
+            Ok(pids
+                .into_iter()
+                .all(|pid| pid == 0 || (!self.group && pid == owner) || !is_running(pid)))
+        }
+        #[cfg(windows)]
+        {
+            self.job.is_empty()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "process scope observation is unavailable",
+            ))
+        }
+    }
+
     #[cfg(unix)]
     fn signal(&self, signal: nix::sys::signal::Signal) {
         use nix::{

@@ -58,6 +58,12 @@ pub struct Options {
     /// Fail unless the runner restored a private dependency lockfile.
     #[arg(long, requires = "profile_startup")]
     pub require_cached_dependencies: bool,
+    /// Reuse an exclusively leased fixture path between complete runs.
+    #[arg(long, requires = "fixture")]
+    pub reuse_fixture: bool,
+    /// Fail unless a private compiler workspace was reused after clean shutdown.
+    #[arg(long, requires = "profile_startup")]
+    pub require_cached_workspace: bool,
     /// Include Cargo fingerprint/rebuild reasons in the compiler log.
     #[arg(long)]
     pub build_diagnostics: bool,
@@ -226,6 +232,18 @@ impl Host {
 }
 pub fn run(options: Options) -> Result<()> {
     let fixture_dir = tempfile::tempdir()?;
+    let fixture_lease = if options.reuse_fixture {
+        Some(cranpose_plugin_cache::WorkspaceLease::acquire(
+            &options.cache.join("fixtures"),
+            options.fixture.as_deref().context("fixture")?.as_bytes(),
+        )?)
+    } else {
+        None
+    };
+    let fixture_path = fixture_lease
+        .as_ref()
+        .map(|lease| lease.path())
+        .unwrap_or(fixture_dir.path());
     let workspace = if let Some(workspace) = options.workspace {
         workspace
     } else {
@@ -233,9 +251,9 @@ pub fn run(options: Options) -> Result<()> {
             &crate::root()
                 .join("dev-runner/tests/fixtures")
                 .join(options.fixture.context("fixture")?),
-            fixture_dir.path(),
+            fixture_path,
         )?;
-        fixture_dir.path().to_owned()
+        fixture_path.to_owned()
     };
     let source = workspace.join(&options.source);
     let original = fs::read_to_string(&source)?;
@@ -309,6 +327,12 @@ pub fn run(options: Options) -> Result<()> {
     } else {
         Value::Null
     };
+    if options.require_cached_workspace {
+        ensure!(
+            startup_phases["workspaceReused"] == true,
+            "Private compiler workspace was not reused or reuse evidence is missing"
+        );
+    }
     if options.require_cached_dependencies {
         ensure!(
             startup_phases["dependencyCacheHit"] == true,
@@ -335,6 +359,10 @@ pub fn run(options: Options) -> Result<()> {
         let shutdown_ms = stop_preview(&mut cleanup.child, &pids)?;
         let result = json!({"result":"passed", "mode":"startup", "startupMs":startup_ms,
             "idle":idle, "shutdownMs":shutdown_ms, "stoppedPids":pids, "snapshotPollMs":200, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
+        drop(cleanup);
+        if let Some(lease) = fixture_lease {
+            lease.complete()?;
+        }
         write_report(options.report, &result)?;
         return Ok(());
     }
@@ -436,6 +464,10 @@ pub fn run(options: Options) -> Result<()> {
     let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change",
         "startupMs":startup_ms, "backgroundNoiseMs":options.background_noise_ms,
         "snapshotPollMs":200, "patches":timings, "shutdownMs":shutdown_ms, "stoppedPids":pids, "idle":idle, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
+    drop(cleanup);
+    if let Some(lease) = fixture_lease {
+        lease.complete()?;
+    }
     write_report(options.report, &result)
 }
 // Dioxus timestamps start with the compiler process; host timings start with
@@ -453,6 +485,10 @@ fn startup_evidence(log: &str) -> Value {
         .iter()
         .find(|event| event["cranposeDev"] == "dependencyCache")
         .and_then(|event| event["hit"].as_bool());
+    let workspace_reused = events
+        .iter()
+        .find(|event| event["cranposeDev"] == "workspaceLease")
+        .and_then(|event| event["reused"].as_bool());
     let timestamp = |message: &str| {
         events.iter().find_map(|event| {
             event["message"].as_str()?.contains(message).then_some(())?;
@@ -465,7 +501,7 @@ fn startup_evidence(log: &str) -> Value {
             (seconds.is_finite() && seconds >= 0.0).then_some(seconds * 1000.0)
         })
     };
-    json!({"runner":runner, "dependencyCacheHit":cache_hit,
+    json!({"runner":runner, "dependencyCacheHit":cache_hit, "workspaceReused":workspace_reused,
         "compilerServingMs":timestamp("Serving your app:"),
         "compilerBuildCompletedMs":timestamp("Build completed successfully")})
 }
@@ -688,6 +724,7 @@ mod tests {
             "unstructured compiler output".to_owned(),
             json!({"cranposeDev":"startupPhase","phase":"metadata","durationMs":42}).to_string(),
             json!({"cranposeDev":"dependencyCache","hit":true}).to_string(),
+            json!({"cranposeDev":"workspaceLease","reused":true}).to_string(),
             json!({"timestamp":"  0.40s","message":"Serving your app: counter"}).to_string(),
             json!({"timestamp":"  3.22s","message":"Build completed successfully in 2.82s"})
                 .to_string(),
@@ -696,6 +733,7 @@ mod tests {
         let phases = startup_evidence(&log);
         assert_eq!(phases["runner"].as_array().expect("phases").len(), 1);
         assert_eq!(phases["dependencyCacheHit"], true);
+        assert_eq!(phases["workspaceReused"], true);
         assert_eq!(phases["compilerServingMs"], 400.0);
         assert_eq!(phases["compilerBuildCompletedMs"], 3220.0);
         for log in [
@@ -706,6 +744,7 @@ mod tests {
         ] {
             let phases = startup_evidence(log);
             assert!(phases["dependencyCacheHit"].is_null());
+            assert!(phases["workspaceReused"].is_null());
             assert!(phases["compilerServingMs"].is_null());
         }
     }
