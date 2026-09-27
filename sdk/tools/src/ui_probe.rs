@@ -65,7 +65,7 @@ impl FrameCapture {
     /// Count opaque pixels in the full frame and a target rectangle in one pass.
     pub fn alpha_counts(&self, threshold: u8, target: [u32; 4]) -> (usize, usize) {
         let (mut painted, mut impact) = (0, 0);
-        for (index, pixel) in self.rgba.chunks_exact(4).enumerate() {
+        for (index, pixel) in self.rgba.as_chunks::<4>().0.iter().enumerate() {
             if pixel[3] <= threshold {
                 continue;
             }
