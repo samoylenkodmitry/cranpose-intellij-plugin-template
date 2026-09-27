@@ -178,3 +178,14 @@ them. WGSL remains the GPU shader language; application and tooling code is Rust
 ## Credits
 
 Built with Cranpose and the IntelliJ Platform SDK. Apache-2.0.
+
+## Measuring Studio inspection and Restart
+
+The shared Rust tools include two optional performance probes:
+
+- `hot-smoke --startup-only --restart-rounds 5` starts each replacement while its predecessor is alive, requests a fresh response from the old preview, then verifies its runner, compiler and application have exited. Reports include each startup phase, private workspace path and Cargo build time. The harness keeps the predecessor through the first snapshot; the IDE switches at connection.
+- `inspection-profile --binary /path/to/studio-ui --nodes 1000 --seconds 20 --settle-seconds 5 --log inspector.log --report inspector.json` sends unchanged layouts through the real embedded protocol, records visible and hidden UI CPU, and verifies a changed layout appears. CPU sampling currently requires macOS or Linux. It excludes application capture, IDE/JNI work and the measurement host. `--require-quiet` checks that settled unchanged layouts produce no frames; it is not a CPU threshold.
+
+Both probes use owned processes and bounded shutdown. Studio runs them in CI.
+`delivery::SequenceGate` shares the accepted revision across UI model clones, so
+discarding an equal model cannot allow an older asynchronous reply to replace it.

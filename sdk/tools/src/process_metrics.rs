@@ -7,7 +7,7 @@ pub const RESOLUTION: f64 = 0.01;
 pub const RESOLUTION: f64 = 1.0;
 
 #[cfg(unix)]
-pub fn sample(pids: &[u32; 3]) -> Result<[f64; 3]> {
+pub fn sample<const N: usize>(pids: &[u32; N]) -> Result<[f64; N]> {
     use anyhow::{Context, ensure};
     use std::{process::Command, time::Duration};
     let mut command = Command::new("ps");
@@ -25,7 +25,7 @@ pub fn sample(pids: &[u32; 3]) -> Result<[f64; 3]> {
     let output =
         cranpose_ide_host::process::capture(command, None, Duration::from_secs(2), || false)?;
     ensure!(output.status.success(), "CPU sampling failed");
-    let mut values = [None; 3];
+    let mut values = [None; N];
     for line in std::str::from_utf8(&output.stdout)?.lines() {
         let mut columns = line.split_whitespace();
         let pid: u32 = columns.next().context("Missing process PID")?.parse()?;
@@ -34,14 +34,15 @@ pub fn sample(pids: &[u32; 3]) -> Result<[f64; 3]> {
             values[index] = Some(time);
         }
     }
-    Ok([
-        values[0].context("runner exited during measurement")?,
-        values[1].context("compiler exited during measurement")?,
-        values[2].context("application exited during measurement")?,
-    ])
+    let mut samples = [0.0; N];
+    for (index, value) in values.into_iter().enumerate() {
+        samples[index] =
+            value.with_context(|| format!("Process {} exited during measurement", pids[index]))?;
+    }
+    Ok(samples)
 }
 #[cfg(not(unix))]
-pub fn sample(_pids: &[u32; 3]) -> Result<[f64; 3]> {
+pub fn sample<const N: usize>(_pids: &[u32; N]) -> Result<[f64; N]> {
     anyhow::bail!("--idle-seconds CPU sampling currently requires macOS or Linux")
 }
 #[cfg(any(unix, test))]

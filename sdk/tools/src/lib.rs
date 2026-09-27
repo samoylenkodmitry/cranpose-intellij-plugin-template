@@ -1,6 +1,7 @@
 mod bridge;
 mod hot_smoke;
 mod ide_test;
+mod inspection_profile;
 mod package;
 mod process_metrics;
 mod release;
@@ -32,6 +33,8 @@ enum Task {
     #[command(subcommand)]
     Release(release::Task),
     HotSmoke(hot_smoke::Options),
+    /// Profile the Cranpose Studio inspector with repeatable synthetic layouts.
+    InspectionProfile(inspection_profile::Options),
     BridgeTest {
         java: Option<PathBuf>,
         #[arg(long)]
@@ -58,6 +61,7 @@ pub fn run_cli(config: BuildConfig) -> Result<()> {
         Task::IdeTest { ide } => ide_test::run(&ide),
         Task::Release(task) => release::run(task),
         Task::HotSmoke(options) => hot_smoke::run(options),
+        Task::InspectionProfile(options) => inspection_profile::run(options),
         Task::BridgeTest { java, ide } => bridge_test(java, ide),
         Task::Package {
             native_dir,
