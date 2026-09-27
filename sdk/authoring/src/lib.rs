@@ -7,12 +7,14 @@ use anyhow::{Result, ensure};
 use quote::ToTokens;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use source::SourceIndex;
 use syn::{
     spanned::Spanned,
     visit_mut::{self, VisitMut},
 };
 
 pub mod runtime;
+mod source;
 pub mod transport;
 pub const RUNTIME_SOURCE: &str = include_str!("runtime.rs");
 pub const TRANSPORT_SOURCE: &str = include_str!("transport.rs");
@@ -66,7 +68,7 @@ impl Catalog {
         );
         let mut file = syn::parse_file(source)?;
         let mut walk = Walk {
-            source,
+            source: SourceIndex::new(source),
             active: false,
             functions: vec![],
             calls: vec![],
@@ -173,8 +175,8 @@ impl Catalog {
     }
 }
 
-struct Walk<'a> {
-    source: &'a str,
+struct Walk {
+    source: SourceIndex,
     active: bool,
     functions: Vec<Function>,
     calls: Vec<Call>,
@@ -185,33 +187,7 @@ fn attr(attrs: &[syn::Attribute], name: &str) -> bool {
         .iter()
         .any(|a| a.path().segments.last().is_some_and(|s| s.ident == name))
 }
-fn byte_offset(source: &str, point: proc_macro2::LineColumn) -> usize {
-    let base = source
-        .split_inclusive('\n')
-        .take(point.line.saturating_sub(1))
-        .map(str::len)
-        .sum::<usize>();
-    base + source
-        .get(base..)
-        .unwrap_or_default()
-        .chars()
-        .take(point.column)
-        .map(char::len_utf8)
-        .sum::<usize>()
-}
-fn range(source: &str, span: proc_macro2::Span) -> Range {
-    let start = byte_offset(source, span.start());
-    let end = byte_offset(source, span.end());
-    Range {
-        start,
-        end,
-        start_utf16: source[..start].encode_utf16().count(),
-        end_utf16: source[..end].encode_utf16().count(),
-        line: span.start().line,
-        column: span.start().column + 1,
-    }
-}
-impl Walk<'_> {
+impl Walk {
     fn literal(&mut self, expr: &syn::Expr) -> Option<Literal> {
         let (literal, negative) = match expr {
             syn::Expr::Lit(l) => (&l.lit, false),
@@ -239,18 +215,18 @@ impl Walk<'_> {
             kind: kind.into(),
             value,
             suffix,
-            range: range(self.source, expr.span()),
+            range: self.source.range(expr.span()),
         })
     }
 }
-impl VisitMut for Walk<'_> {
+impl VisitMut for Walk {
     fn visit_item_fn_mut(&mut self, function: &mut syn::ItemFn) {
         let previous = self.active;
         self.active = attr(&function.attrs, "composable") && function.sig.constness.is_none();
         if self.active {
             self.functions.push(Function {
                 name: function.sig.ident.to_string(),
-                range: range(self.source, function.sig.ident.span()),
+                range: self.source.range(function.sig.ident.span()),
                 preview: function.sig.inputs.is_empty() && function.sig.generics.params.is_empty(),
             });
             self.visit_block_mut(&mut function.block);
@@ -292,8 +268,8 @@ impl VisitMut for Walk<'_> {
             {
                 self.calls.push(Call {
                     name,
-                    range: range(self.source, call.func.span()),
-                    end: byte_offset(self.source, call.span().end()),
+                    range: self.source.range(call.func.span()),
+                    end: self.source.offsets(call.span().end()).0,
                 });
             }
         }
