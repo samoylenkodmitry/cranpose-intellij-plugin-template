@@ -151,6 +151,7 @@ pub fn schedule(project: &Project, j: &mut J<'_>) -> Result<()> {
 }
 
 pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
+    crate::feedback::tick(project, j)?;
     crate::wizard::tick(project, j)?;
     {
         let mut state = project.authoring.lock().expect("authoring");
@@ -201,7 +202,8 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         project.authoring.lock().expect("authoring").receiver = None;
         if result.path == path && result.stamp == stamp {
             if let Some(catalog) = &result.catalog {
-                crate::feedback::parsed(project, &path, stamp, catalog);
+                let revision = SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros() as u64;
+                crate::feedback::parsed(project, &path, stamp, catalog, revision);
                 refresh_placed(project, j, &editor, &path, catalog)?;
                 if !catalog.literals.is_empty() {
                     ensure_control(project, j)?;
@@ -213,7 +215,7 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                 let payload = serde_json::to_string(&Update {
                     file: relative,
                     schema: catalog.schema.clone(),
-                    revision: SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros() as u64,
+                    revision,
                     values: catalog
                         .literals
                         .iter()
@@ -884,7 +886,7 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
         &[A::O(&point), A::O(&class)],
     )?;
     let mut state = project.authoring.lock().expect("authoring");
-    let mut literal = if inlay.is_null() {
+    let literal = if inlay.is_null() {
         None
     } else {
         state
@@ -892,57 +894,12 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
             .iter()
             .find_map(|p| j.same(&p.object, &inlay).ok().filter(|v| *v).and(p.literal))
     };
-    // Hover either the glyph or the source expression. IntelliJ provides UTF-16
-    // positions, including supplementary Unicode and soft-wrap geometry.
-    if literal.is_none()
-        && let Some(catalog) = state.current.as_ref().and_then(|p| p.catalog.as_ref())
-    {
-        let logical = j.obj(
-            &editor,
-            "xyToLogicalPosition",
-            "(Ljava/awt/Point;)Lcom/intellij/openapi/editor/LogicalPosition;",
-            &[A::O(&point)],
-        )?;
-        let offset = j
-            .call(
-                &editor,
-                "logicalPositionToOffset",
-                "(Lcom/intellij/openapi/editor/LogicalPosition;)I",
-                &[A::O(&logical)],
-            )?
-            .i()? as usize;
-        let x = j.field_int(&point, "x")?;
-        let y = j.field_int(&point, "y")?;
-        for (id, range) in catalog
-            .references
-            .iter()
-            .map(|r| (r.literal, &r.range))
-            .chain(catalog.literals.iter().map(|l| (l.id, &l.range)))
-        {
-            if offset >= range.start_utf16 && offset < range.end_utf16 {
-                let start = j.obj(
-                    &editor,
-                    "offsetToXY",
-                    "(I)Ljava/awt/Point;",
-                    &[A::I(range.start_utf16 as i32)],
-                )?;
-                let end = j.obj(
-                    &editor,
-                    "offsetToXY",
-                    "(I)Ljava/awt/Point;",
-                    &[A::I(range.end_utf16 as i32)],
-                )?;
-                if y >= j.field_int(&start, "y")?
-                    && y < j.field_int(&end, "y")? + j.int(&editor, "getLineHeight")?
-                    && (y >= j.field_int(&start, "y")? + j.int(&editor, "getLineHeight")?
-                        || x >= j.field_int(&start, "x")?)
-                    && (y < j.field_int(&end, "y")? || x < j.field_int(&end, "x")?)
-                {
-                    literal = Some(id);
-                    break;
-                }
-            }
-        }
+    // The glyph is the control's explicit hit target. Source text belongs to
+    // caret placement and selection, including a click while a popup is open.
+    if literal.is_none() && focus {
+        state.hovered = None;
+        drop(state);
+        return dismiss_control(project, j);
     }
     if !focus && state.hovered == literal {
         return Ok(());
@@ -1439,6 +1396,7 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             .find(|r| r.name == "tint" && r.range.start > aliases.find("Text(").expect("call"))
             .expect("color reference");
         let offset = reference.range.start_utf16;
+        let glyph_offset = reference.range.end_utf16;
         let reference_count = project
             .authoring
             .lock()
@@ -1493,6 +1451,40 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         )?;
         let event=j.new("com/intellij/openapi/editor/event/EditorMouseEvent","(Lcom/intellij/openapi/editor/Editor;Ljava/awt/event/MouseEvent;Lcom/intellij/openapi/editor/event/EditorMouseEventArea;)V",&[A::O(&editor),A::O(&mouse),A::O(&area)])?;
         pointer(project, j, &event, false)?;
+        ensure!(
+            project.authoring.lock().expect("authoring").popup.is_none(),
+            "Hovering value text must leave the caret area clear"
+        );
+        let text_event = event;
+        let glyph = project
+            .authoring
+            .lock()
+            .expect("authoring")
+            .placed
+            .iter()
+            .filter(|p| p.literal.is_some())
+            .find(|p| j.int(&p.object, "getOffset").ok() == Some(glyph_offset as i32))
+            .map(|p| p.object.clone())
+            .context("Alias glyph")?;
+        let bounds = j.obj(&glyph, "getBounds", "()Ljava/awt/Rectangle;", &[])?;
+        let glyph_x = j.field_int(&bounds, "x")? + 2;
+        let glyph_y = j.field_int(&bounds, "y")? + 2;
+        let mouse = j.new(
+            "java/awt/event/MouseEvent",
+            "(Ljava/awt/Component;IJIIIIZ)V",
+            &[
+                A::O(&component),
+                A::I(503),
+                A::J(0),
+                A::I(0),
+                A::I(glyph_x),
+                A::I(glyph_y),
+                A::I(0),
+                A::Z(false),
+            ],
+        )?;
+        let event=j.new("com/intellij/openapi/editor/event/EditorMouseEvent","(Lcom/intellij/openapi/editor/Editor;Ljava/awt/event/MouseEvent;Lcom/intellij/openapi/editor/event/EditorMouseEventArea;)V",&[A::O(&editor),A::O(&mouse),A::O(&area)])?;
+        pointer(project, j, &event, false)?;
         let (popup, panel) = project
             .authoring
             .lock()
@@ -1541,6 +1533,33 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         ensure!(
             project.authoring.lock().expect("authoring").popup.is_none(),
             "Dismissed hover reopened before pointer left"
+        );
+        pointer(project, j, &text_event, false)?;
+        pointer(project, j, &event, false)?;
+        ensure!(
+            project.authoring.lock().expect("authoring").popup.is_some(),
+            "Glyph hover must still open immediately after leaving it"
+        );
+        let click = j.new(
+            "java/awt/event/MouseEvent",
+            "(Ljava/awt/Component;IJIIIIZI)V",
+            &[
+                A::O(&component),
+                A::I(500),
+                A::J(0),
+                A::I(0),
+                A::I(x),
+                A::I(y),
+                A::I(1),
+                A::Z(false),
+                A::I(1),
+            ],
+        )?;
+        let clicked=j.new("com/intellij/openapi/editor/event/EditorMouseEvent","(Lcom/intellij/openapi/editor/Editor;Ljava/awt/event/MouseEvent;Lcom/intellij/openapi/editor/event/EditorMouseEventArea;)V",&[A::O(&editor),A::O(&click),A::O(&area)])?;
+        pointer(project, j, &clicked, true)?;
+        ensure!(
+            project.authoring.lock().expect("authoring").popup.is_none(),
+            "Clicking source must dismiss the control without stealing focus"
         );
         panel.close(j)?;
         project.authoring.lock().expect("authoring").control = None;

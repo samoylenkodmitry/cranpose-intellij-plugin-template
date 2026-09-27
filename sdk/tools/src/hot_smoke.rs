@@ -104,6 +104,9 @@ pub(crate) struct Host {
     pub(crate) frames: Arc<AtomicUsize>,
     runtime: Value,
     applied_at: Option<Instant>,
+    expected_values: Option<Value>,
+    confirmed_values: Option<u64>,
+    composed: Option<u64>,
     next_request: u64,
     capture: Option<Arc<Mutex<crate::ui_probe::FrameCapture>>>,
 }
@@ -178,6 +181,9 @@ impl Host {
             frames,
             runtime: Value::Null,
             applied_at: None,
+            expected_values: None,
+            confirmed_values: None,
+            composed: None,
             next_request: 0,
             capture: captured,
         };
@@ -226,7 +232,21 @@ impl Host {
             match self.messages.recv_timeout(Duration::from_millis(200)) {
                 Ok(result) => {
                     let (channel, payload, received_at) = result?;
-                    if channel == "cranpose.dev.applied" {
+                    if channel == "cranpose.dev.values.result" {
+                        if let Some(expected) = &self.expected_values
+                            && ["file", "schema", "revision"]
+                                .iter()
+                                .all(|key| payload[key] == expected[key])
+                        {
+                            ensure!(
+                                payload["accepted"] == true && payload["changed"] == true,
+                                "Live update was not accepted: {payload}"
+                            );
+                            self.confirmed_values = payload["generation"].as_u64();
+                        }
+                    } else if channel == "cranpose.dev.composed" {
+                        self.composed = payload["generation"].as_u64();
+                    } else if channel == "cranpose.dev.applied" {
                         println!("{}", json!({"runtime":payload}));
                         self.runtime = payload;
                         self.applied_at = Some(received_at);
@@ -248,7 +268,11 @@ impl Host {
                                 .as_u64()
                                 .is_some_and(|current| current > previous)
                         });
+                        let composed = self.expected_values.is_none()
+                            || (self.confirmed_values.is_some()
+                                && self.confirmed_values == self.composed);
                         if acknowledged
+                            && composed
                             && expected.iter().all(|text| {
                                 nodes.iter().any(|node| node["text"].as_str() == Some(text))
                             })
@@ -532,6 +556,8 @@ pub fn run(mut options: Options) -> Result<()> {
             .and_then(|c| c.lock().expect("frame").pixel(2, 2));
         let previous_generation = host.runtime["generation"].as_u64().unwrap_or(0);
         let payload = live_values(&source, &options.source)?;
+        host.expected_values = Some(serde_json::from_str(&payload)?);
+        host.confirmed_values = None;
         let sent = Instant::now();
         host.send(Packet::message("cranpose.dev.values", &payload))?;
         host.snapshot_after(&["Live count: 3", label], 10, Some(previous_generation))?;
@@ -567,6 +593,7 @@ pub fn run(mut options: Options) -> Result<()> {
         );
     }
     if options.live_values_rounds > 0 {
+        host.expected_values = None;
         let previous_generation = host.runtime["generation"].as_u64().unwrap_or(0);
         host.send(Packet::message(
             "cranpose.dev.values",
@@ -1118,6 +1145,9 @@ mod tests {
                 runtime: json!({"generation":0,"pid":42}),
                 capture: None,
                 applied_at: None,
+                expected_values: None,
+                confirmed_values: None,
+                composed: None,
                 next_request: 0,
             };
             let snapshot = json!({"requestId":1,"nodes":[{"text":"edited"}]});

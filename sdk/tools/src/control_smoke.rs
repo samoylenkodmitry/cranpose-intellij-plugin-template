@@ -73,9 +73,18 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
         let menu = verify_text(&host, "Copy")?;
         click(&host, &menu, "Apply")?;
         expect_edit(&host, "Pointer edit")?;
+        // The first host acknowledgment changes the footer text and can wrap it
+        // on another platform's fonts. Wait for that layout before targeting Reset.
+        verify_text(&host, "Source updated · Undo in the editor")?;
         let menu = verify_text(&host, "Copy")?;
         click(&host, &menu, "Reset")?;
-        expect_edit(&host, "Original value")?;
+        if let Err(error) = expect_edit(&host, "Original value") {
+            capture
+                .lock()
+                .expect("capture")
+                .save(&output.join(format!("authoring-controls-reset-failure-{scale}.png")))?;
+            return Err(error);
+        }
         let mut typed = Vec::new();
         for (kind, initial, action, changed) in [
             ("int", "41", "+", "42"),

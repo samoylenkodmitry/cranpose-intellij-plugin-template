@@ -10,11 +10,18 @@ use syn::{
 enum Origin {
     Literal(usize),
     Fields(BTreeMap<String, Origin>),
+    Sequence(Vec<Option<Origin>>),
+    Iteration(Box<Origin>),
+    Choices(Vec<usize>),
 }
 
-pub(crate) fn resolve(source: &str, file: &syn::File, literals: &[Literal]) -> Vec<Reference> {
+pub(crate) fn resolve(
+    source: &str,
+    file: &syn::File,
+    literals: &[Literal],
+) -> (Vec<Reference>, Vec<Reference>) {
     if literals.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let mut resolver = Resolver {
         source,
@@ -25,13 +32,14 @@ pub(crate) fn resolve(source: &str, file: &syn::File, literals: &[Literal]) -> V
             .collect(),
         scopes: Vec::new(),
         references: Vec::new(),
+        flows: Vec::new(),
     };
     resolver.visit_file(file);
     resolver.references.sort_by_key(|r| r.range.start);
     resolver
         .references
         .dedup_by_key(|r| (r.range.start, r.range.end));
-    resolver.references
+    (resolver.references, resolver.flows)
 }
 
 struct Resolver<'a> {
@@ -40,6 +48,7 @@ struct Resolver<'a> {
     literals: BTreeMap<(usize, usize), usize>,
     scopes: Vec<BTreeMap<String, Option<Origin>>>,
     references: Vec<Reference>,
+    flows: Vec<Reference>,
 }
 impl Resolver<'_> {
     fn lookup(&self, name: &str) -> Option<Origin> {
@@ -78,6 +87,20 @@ impl Resolver<'_> {
                     .filter_map(|(i, e)| self.origin(e).map(|o| (i.to_string(), o)))
                     .collect(),
             )),
+            syn::Expr::Array(a) => Some(Origin::Sequence(
+                a.elems.iter().map(|e| self.origin(e)).collect(),
+            )),
+            syn::Expr::MethodCall(m) if m.args.is_empty() => {
+                match (m.method.to_string().as_str(), self.origin(&m.receiver)?) {
+                    ("iter" | "into_iter", Origin::Sequence(items)) => {
+                        elements(items).map(|o| Origin::Iteration(Box::new(o)))
+                    }
+                    ("enumerate", Origin::Iteration(item)) => Some(Origin::Iteration(Box::new(
+                        Origin::Fields(BTreeMap::from([("1".into(), *item)])),
+                    ))),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -166,6 +189,46 @@ fn member(member: &syn::Member) -> String {
         syn::Member::Unnamed(i) => i.index.to_string(),
     }
 }
+// Loop values have several possible origins. Keep this provenance separate
+// from single-initializer controls: hovering a loop variable must never pick
+// one array element arbitrarily. Unknown elements invalidate that path.
+fn elements(items: Vec<Option<Origin>>) -> Option<Origin> {
+    let items = items.into_iter().collect::<Option<Vec<_>>>()?;
+    if items.is_empty() {
+        return None;
+    }
+    if items.iter().all(|o| matches!(o, Origin::Fields(_))) {
+        let keys = match &items[0] {
+            Origin::Fields(f) => f.keys().cloned().collect::<Vec<_>>(),
+            _ => unreachable!(),
+        };
+        let mut fields = BTreeMap::new();
+        for key in keys {
+            let values = items
+                .iter()
+                .map(|o| match o {
+                    Origin::Fields(f) => f.get(&key).cloned(),
+                    _ => None,
+                })
+                .collect();
+            if let Some(origin) = elements(values) {
+                fields.insert(key, origin);
+            }
+        }
+        return Some(Origin::Fields(fields));
+    }
+    let mut ids = Vec::new();
+    for item in items {
+        match item {
+            Origin::Literal(id) => ids.push(id),
+            Origin::Choices(choices) => ids.extend(choices),
+            _ => return None,
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    Some(Origin::Choices(ids))
+}
 impl<'ast> Visit<'ast> for Resolver<'_> {
     fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
         // Nested items cannot capture the enclosing function's locals.
@@ -242,11 +305,28 @@ impl<'ast> Visit<'ast> for Resolver<'_> {
         self.bind(&local.pat, origin);
     }
     fn visit_expr(&mut self, expr: &'ast syn::Expr) {
-        if matches!(expr, syn::Expr::Path(_) | syn::Expr::Field(_))
-            && let Some(Origin::Literal(id)) = self.origin(expr)
-        {
-            self.record(expr.span(), id);
-            return;
+        if matches!(expr, syn::Expr::Path(_) | syn::Expr::Field(_)) {
+            match self.origin(expr) {
+                Some(Origin::Literal(id)) => {
+                    self.record(expr.span(), id);
+                    return;
+                }
+                Some(Origin::Choices(ids)) => {
+                    let range = self.index.range(expr.span());
+                    for id in ids {
+                        if self.flows.len() >= 8192 {
+                            break;
+                        }
+                        self.flows.push(Reference {
+                            literal: id,
+                            name: self.source[range.start..range.end].into(),
+                            range: range.clone(),
+                        });
+                    }
+                    return;
+                }
+                _ => {}
+            }
         }
         visit::visit_expr(self, expr);
     }
@@ -260,8 +340,13 @@ impl<'ast> Visit<'ast> for Resolver<'_> {
     }
     fn visit_expr_for_loop(&mut self, f: &'ast syn::ExprForLoop) {
         self.visit_expr(&f.expr);
+        let origin = match self.origin(&f.expr) {
+            Some(Origin::Sequence(items)) => elements(items),
+            Some(Origin::Iteration(item)) => Some(*item),
+            _ => None,
+        };
         self.push();
-        self.bind(&f.pat, None);
+        self.bind(&f.pat, origin);
         self.visit_block(&f.body);
         self.pop();
     }

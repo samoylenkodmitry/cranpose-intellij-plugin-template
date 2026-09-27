@@ -28,6 +28,70 @@ use windows_sys::Win32::{
 };
 
 pub struct Job(OwnedHandle);
+/// Cumulative user and kernel CPU time. FILETIME units are 100 ns; accounting
+/// granularity depends on Windows and should not be confused with accuracy.
+pub fn cpu_time(pid: u32) -> io::Result<std::time::Duration> {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    };
+    // SAFETY: query-only access to the specified PID; no borrowed pointers.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: OpenProcess returned a valid, uniquely owned handle.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: all four output buffers are initialized and valid; handle stays alive.
+    if unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let ticks = |v: FILETIME| (u64::from(v.dwHighDateTime) << 32) | u64::from(v.dwLowDateTime);
+    let ticks = ticks(kernel).saturating_add(ticks(user));
+    Ok(std::time::Duration::new(
+        ticks / 10_000_000,
+        ((ticks % 10_000_000) * 100) as u32,
+    ))
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    #[test]
+    fn reads_monotonic_cpu_and_closes_query_handles() {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+        let handles = || {
+            let mut count = 0;
+            // SAFETY: current-process pseudo-handle and a valid output pointer.
+            assert_ne!(
+                unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) },
+                0
+            );
+            count
+        };
+        let before_handles = handles();
+        let before = super::cpu_time(std::process::id()).expect("CPU time");
+        for _ in 0..128 {
+            assert!(super::cpu_time(std::process::id()).expect("CPU time") >= before);
+        }
+        // Other parallel tests may open handles; a leaked handle per sample would
+        // exceed this allowance by an order of magnitude.
+        assert!(handles() <= before_handles + 16);
+        assert!(super::cpu_time(u32::MAX).is_err());
+    }
+}
 impl Job {
     pub fn prepare(command: &mut Command) -> io::Result<Self> {
         // SAFETY: no security attributes/name; returned handle is uniquely owned.

@@ -1,12 +1,11 @@
-//! A short Cranpose arc from an edit to its confirmed rendered Text view.
-//! No polling or frame work is added while there is no pending text edit.
+//! Bounded charging and completion effects for confirmed live value updates.
 use crate::{
     jvm::{A, J, O},
     project::Project,
     surface::{Panel, Surface},
 };
 use anyhow::Result;
-use cranpose_plugin_authoring::{Catalog, feedback::TextTarget};
+use cranpose_plugin_authoring::{Catalog, feedback::ViewTarget};
 use serde_json::json;
 use std::{
     path::Path,
@@ -19,6 +18,7 @@ pub struct State {
     edit: Option<Edit>,
     overlay: Option<(Weak<Panel>, Weak<Surface>)>,
     showing: Option<Instant>,
+    charging: bool,
 }
 #[derive(Clone)]
 pub struct Edit {
@@ -31,19 +31,72 @@ pub struct Edit {
 pub struct Trace {
     edit: Edit,
     file: String,
-    target: TextTarget,
+    target: ViewTarget,
+    revision: u64,
+    schema: String,
+    generation: Option<u64>,
+    acknowledged: Option<Instant>,
+    composed: Option<Instant>,
     request: Option<u64>,
     attempts: usize,
 }
 impl Trace {
+    pub fn log(&self, j: &mut J<'_>, stage: &str, detail: &str) -> Result<()> {
+        if j.static_call(
+            "java/lang/Boolean",
+            "getBoolean",
+            "(Ljava/lang/String;)Z",
+            &[A::S("cranpose.trace.edits")],
+        )?
+        .z()?
+        {
+            let logger = j.static_obj(
+                "com/intellij/openapi/diagnostic/Logger",
+                "getInstance",
+                "(Ljava/lang/String;)Lcom/intellij/openapi/diagnostic/Logger;",
+                &[A::S("dev.cranpose.feedback")],
+            )?;
+            let message = format!(
+                "CRANPOSE_EDIT_STAGE {}",
+                json!({"stage":stage,"detail":detail,"revision":self.revision,"elapsedMs":self.edit.started.elapsed().as_secs_f64()*1000.0,"generation":self.generation,"composed":self.composed.is_some(),"lines":self.target.lines})
+            );
+            j.void(&logger, "info", "(Ljava/lang/String;)V", &[A::S(&message)])?;
+        }
+        Ok(())
+    }
     pub fn follows(&self, frame: Instant) -> bool {
-        frame >= self.edit.started
+        self.composed.is_some() && self.acknowledged.is_some_and(|ack| frame >= ack)
+    }
+    /// Ignore stale acknowledgments, rejected source schemas and composition
+    /// events from another update. A frame alone is not proof of live values.
+    pub fn message(&mut self, channel: &str, payload: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+            return false;
+        };
+        if channel == "cranpose.dev.values.result"
+            && value["revision"].as_u64() == Some(self.revision)
+            && value["file"].as_str() == Some(&self.file)
+            && value["schema"].as_str() == Some(&self.schema)
+        {
+            if value["accepted"] != true || value["changed"] != true {
+                return true;
+            }
+            self.generation = value["generation"].as_u64();
+            self.acknowledged = Some(Instant::now());
+        } else if channel == "cranpose.dev.composed"
+            && self.generation.is_some()
+            && value["generation"].as_u64() == self.generation
+        {
+            self.composed = Some(Instant::now());
+        }
+        false
     }
     pub fn expired(&self) -> bool {
         self.edit.started.elapsed() > Duration::from_secs(10)
     }
     pub fn request(&mut self) -> Option<u64> {
-        if self.expired() || self.request.is_some() || self.attempts >= 8 {
+        if self.expired() || self.composed.is_none() || self.request.is_some() || self.attempts >= 8
+        {
             return None;
         }
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 63);
@@ -123,12 +176,13 @@ pub fn document_changed(project: &Arc<Project>, j: &mut J<'_>, event: &O) -> Res
     }
     Ok(())
 }
-pub fn parsed(project: &Arc<Project>, path: &str, stamp: i64, catalog: &Catalog) {
+pub fn parsed(project: &Arc<Project>, path: &str, stamp: i64, catalog: &Catalog, revision: u64) {
     let edit = project.feedback.lock().expect("feedback").edit.clone();
     let Some(edit) = edit.filter(|e| e.path == path && e.stamp == stamp) else {
         return;
     };
-    let Some(target) = TextTarget::at(catalog, edit.offset as usize) else {
+    let Some(target) = ViewTarget::at(catalog, edit.offset as usize) else {
+        project.feedback.lock().expect("feedback").edit = None;
         return;
     };
     let Ok(file) = Path::new(path).strip_prefix(&project.root) else {
@@ -138,6 +192,11 @@ pub fn parsed(project: &Arc<Project>, path: &str, stamp: i64, catalog: &Catalog)
         edit,
         file: file.to_string_lossy().replace('\\', "/"),
         target,
+        revision,
+        schema: catalog.schema.clone(),
+        generation: None,
+        acknowledged: None,
+        composed: None,
         request: None,
         attempts: 0,
     };
@@ -156,20 +215,45 @@ pub fn attach(project: &Project, panel: &Arc<Panel>, surface: &Arc<Surface>) {
         Some((Arc::downgrade(panel), Arc::downgrade(surface)));
 }
 pub fn tick(project: &Project, j: &mut J<'_>) -> Result<()> {
-    let expired = project
-        .feedback
-        .lock()
-        .expect("feedback")
-        .showing
-        .is_some_and(|t| t.elapsed() > Duration::from_millis(1100));
+    let (expired, pending) = {
+        let state = project.feedback.lock().expect("feedback");
+        (
+            (state.charging && state.edit.is_none())
+                || state
+                    .edit
+                    .as_ref()
+                    .is_some_and(|e| e.started.elapsed() > Duration::from_secs(10))
+                || (!state.charging
+                    && state
+                        .showing
+                        .is_some_and(|t| t.elapsed() > Duration::from_millis(1100))),
+            state.edit.clone().filter(|_| state.showing.is_none()),
+        )
+    };
     if expired {
-        cancel(project, j)?;
+        stop(project, j)?;
+    } else if let Some(edit) = pending {
+        let active = project
+            .workspaces
+            .lock()
+            .expect("workspaces")
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|w| w.has_preview());
+        if active {
+            show(project, j, &edit, None)?;
+        }
     }
     Ok(())
+}
+pub fn stop(project: &Project, j: &mut J<'_>) -> Result<()> {
+    project.feedback.lock().expect("feedback").edit = None;
+    cancel(project, j)
 }
 fn cancel(project: &Project, j: &mut J<'_>) -> Result<()> {
     let overlay = {
         let mut state = project.feedback.lock().expect("feedback");
+        state.charging = false;
         state.showing.take().and_then(|_| state.overlay.clone())
     };
     if let Some((panel, surface)) = overlay {
@@ -201,11 +285,46 @@ pub fn flash(
     bounds: [f64; 4],
     scale: f64,
 ) -> Result<()> {
+    if trace.expired() {
+        return Ok(());
+    }
+    if !show(project, j, &trace.edit, Some((preview, bounds, scale)))? {
+        return stop(project, j);
+    }
+    project.feedback.lock().expect("feedback").edit = None;
+    if j.static_call(
+        "java/lang/Boolean",
+        "getBoolean",
+        "(Ljava/lang/String;)Z",
+        &[A::S("cranpose.trace.edits")],
+    )?
+    .z()?
+    {
+        let message = format!(
+            "CRANPOSE_EDIT_PRESENTED {}",
+            json!({"editToMatchedFrameMs":trace.edit.started.elapsed().as_secs_f64()*1000.0,"snapshotRequests":trace.attempts,"file":trace.file,"lines":trace.target.lines})
+        );
+        let logger = j.static_obj(
+            "com/intellij/openapi/diagnostic/Logger",
+            "getInstance",
+            "(Ljava/lang/String;)Lcom/intellij/openapi/diagnostic/Logger;",
+            &[A::S("dev.cranpose.feedback")],
+        )?;
+        j.void(&logger, "info", "(Ljava/lang/String;)V", &[A::S(&message)])?;
+    }
+    Ok(())
+}
+fn show(
+    project: &Project,
+    j: &mut J<'_>,
+    edit: &Edit,
+    destination: Option<(&O, [f64; 4], f64)>,
+) -> Result<bool> {
     let (Some(file), Some(editor)) = project.selected(j)? else {
-        return Ok(());
+        return Ok(false);
     };
-    if j.text(&file, "getPath")? != trace.edit.path || trace.expired() {
-        return Ok(());
+    if j.text(&file, "getPath")? != edit.path {
+        return Ok(false);
     }
     let doc = j.obj(
         &editor,
@@ -213,8 +332,8 @@ pub fn flash(
         "()Lcom/intellij/openapi/editor/Document;",
         &[],
     )?;
-    if j.long(&doc, "getModificationStamp")? != trace.edit.stamp {
-        return Ok(());
+    if j.long(&doc, "getModificationStamp")? != edit.stamp {
+        return Ok(false);
     }
     let content = j.obj(
         &editor,
@@ -222,8 +341,8 @@ pub fn flash(
         "()Ljavax/swing/JComponent;",
         &[],
     )?;
-    if !j.bool(&content, "isShowing")? || !j.bool(preview, "isShowing")? {
-        return Ok(());
+    if !j.bool(&content, "isShowing")? {
+        return Ok(false);
     }
     let root = j.static_obj(
         "javax/swing/SwingUtilities",
@@ -231,21 +350,29 @@ pub fn flash(
         "(Ljava/awt/Component;)Ljavax/swing/JRootPane;",
         &[A::O(&content)],
     )?;
-    let other = j.static_obj(
-        "javax/swing/SwingUtilities",
-        "getRootPane",
-        "(Ljava/awt/Component;)Ljavax/swing/JRootPane;",
-        &[A::O(preview)],
-    )?;
-    if root.is_null() || !j.same(&root, &other)? {
-        return Ok(());
+    if root.is_null() {
+        return Ok(false);
+    }
+    if let Some((preview, _, _)) = destination {
+        if !j.bool(preview, "isShowing")? {
+            return Ok(false);
+        }
+        let other = j.static_obj(
+            "javax/swing/SwingUtilities",
+            "getRootPane",
+            "(Ljava/awt/Component;)Ljavax/swing/JRootPane;",
+            &[A::O(preview)],
+        )?;
+        if !j.same(&root, &other)? {
+            return Ok(false);
+        }
     }
     let layer = j.obj(&root, "getLayeredPane", "()Ljavax/swing/JLayeredPane;", &[])?;
     let origin = j.obj(
         &editor,
         "offsetToXY",
         "(I)Ljava/awt/Point;",
-        &[A::I(trace.edit.offset)],
+        &[A::I(edit.offset)],
     )?;
     let x = j.field_int(&origin, "x")?;
     let y = j.field_int(&origin, "y")? + j.int(&editor, "getLineHeight")?;
@@ -254,30 +381,35 @@ pub fn flash(
         .call(&visible, "contains", "(II)Z", &[A::I(x), A::I(y - 1)])?
         .z()?
     {
-        return Ok(());
+        return Ok(false);
     }
     let from = point(j, &content, x, y, &layer)?;
-    let [bx, by, bw, bh] = bounds.map(|v| v * scale);
-    let visible = j.obj(preview, "getVisibleRect", "()Ljava/awt/Rectangle;", &[])?;
-    if !j
-        .call(
-            &visible,
-            "contains",
-            "(II)Z",
-            &[A::I((bx + bw / 2.0) as i32), A::I((by + bh / 2.0) as i32)],
-        )?
-        .z()?
-    {
-        return Ok(());
-    }
-    let target = point(j, preview, bx as i32, by as i32, &layer)?;
+    let (target, bw, bh) = if let Some((preview, bounds, scale)) = destination {
+        let [bx, by, bw, bh] = bounds.map(|v| v * scale);
+        let visible = j.obj(preview, "getVisibleRect", "()Ljava/awt/Rectangle;", &[])?;
+        if !j
+            .call(
+                &visible,
+                "contains",
+                "(II)Z",
+                &[A::I((bx + bw / 2.0) as i32), A::I((by + bh / 2.0) as i32)],
+            )?
+            .z()?
+        {
+            return Ok(false);
+        }
+        let target = point(j, preview, bx as i32, by as i32, &layer)?;
+        (target, bw, bh)
+    } else {
+        ([from[0] - 32, from[1] - 24], 64.0, 48.0)
+    };
     let (panel, surface) = {
         let state = project.feedback.lock().expect("feedback");
         let Some((p, s)) = &state.overlay else {
-            return Ok(());
+            return Ok(false);
         };
         let (Some(p), Some(s)) = (p.upgrade(), s.upgrade()) else {
-            return Ok(());
+            return Ok(false);
         };
         (p, s)
     };
@@ -315,7 +447,7 @@ pub fn flash(
     let right = (from[0].max(target[0] + bw.ceil() as i32) + 40).min(j.int(&layer, "getWidth")?);
     let bottom = (from[1].max(target[1] + bh.ceil() as i32) + 48).min(j.int(&layer, "getHeight")?);
     if right <= left || bottom <= top {
-        return Ok(());
+        return Ok(false);
     }
     surface.clear_frame(j)?;
     j.void(
@@ -333,29 +465,11 @@ pub fn flash(
     j.void(surface.component(), "setVisible", "(Z)V", &[A::Z(true)])?;
     panel.send(crate::protocol::Packet::new(13).int(surface.id).byte(1));
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    panel.message("ide.authoring.bolt",&json!({"request":NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed),"from":[from[0]-left,from[1]-top],"target":[target[0]-left,target[1]-top,bw,bh],"size":[right-left,bottom-top]}).to_string());
-    project.feedback.lock().expect("feedback").showing = Some(Instant::now());
-    if j.static_call(
-        "java/lang/Boolean",
-        "getBoolean",
-        "(Ljava/lang/String;)Z",
-        &[A::S("cranpose.trace.edits")],
-    )?
-    .z()?
-    {
-        let message = format!(
-            "CRANPOSE_EDIT_PRESENTED {}",
-            json!({"editToMatchedFrameMs":trace.edit.started.elapsed().as_secs_f64()*1000.0,"snapshotRequests":trace.attempts,"file":trace.file,"lines":trace.target.lines})
-        );
-        let logger = j.static_obj(
-            "com/intellij/openapi/diagnostic/Logger",
-            "getInstance",
-            "(Ljava/lang/String;)Lcom/intellij/openapi/diagnostic/Logger;",
-            &[A::S("dev.cranpose.feedback")],
-        )?;
-        j.void(&logger, "info", "(Ljava/lang/String;)V", &[A::S(&message)])?;
-    }
-    Ok(())
+    panel.message("ide.authoring.bolt",&json!({"request":NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed),"phase":if destination.is_some(){"ready"}else{"pending"},"from":[from[0]-left,from[1]-top],"target":[target[0]-left,target[1]-top,bw,bh],"size":[right-left,bottom-top]}).to_string());
+    let mut state = project.feedback.lock().expect("feedback");
+    state.showing = Some(Instant::now());
+    state.charging = destination.is_none();
+    Ok(true)
 }
 
 #[cfg(feature = "ide-tests")]
@@ -417,7 +531,12 @@ mod tests {
                 started: Instant::now(),
             },
             file: "src/main.rs".into(),
-            target: TextTarget::at(&c, c.literals[0].range.start_utf16).expect("text"),
+            target: ViewTarget::at(&c, c.literals[0].range.start_utf16).expect("text"),
+            schema: c.schema,
+            revision: 42,
+            generation: None,
+            acknowledged: None,
+            composed: None,
             request: None,
             attempts: 0,
         }
@@ -426,7 +545,25 @@ mod tests {
     fn isolates_replies_bounds_requests_and_expires() {
         let mut t = trace();
         assert!(!t.follows(t.edit.started - Duration::from_millis(1)));
-        assert!(t.follows(t.edit.started));
+        assert!(!t.follows(Instant::now()));
+        assert!(t.request().is_none());
+        let ack = json!({"file":t.file,"schema":t.schema,"revision":42,"accepted":true,"changed":true,"generation":7}).to_string();
+        t.message("cranpose.dev.composed", "{\"generation\":7}");
+        assert!(
+            t.composed.is_none(),
+            "Unacknowledged composition is unrelated"
+        );
+        t.message("cranpose.dev.values.result", &ack.replace("42", "41"));
+        assert!(t.generation.is_none());
+        t.message("cranpose.dev.values.result", &ack);
+        assert!(t.request().is_none(), "Acceptance is not composition");
+        t.message("cranpose.dev.composed", "{\"generation\":6}");
+        assert!(
+            t.request().is_none(),
+            "Old composition cannot complete the edit"
+        );
+        t.message("cranpose.dev.composed", "{\"generation\":7}");
+        assert!(t.follows(Instant::now()));
         for _ in 0..8 {
             let id = t.request().expect("request");
             assert!(t.request().is_none(), "Only one snapshot in flight");
@@ -449,5 +586,38 @@ mod tests {
         let mut t = trace();
         t.edit.started = Instant::now() - Duration::from_secs(11);
         assert!(t.request().is_none());
+    }
+    #[test]
+    fn rejected_and_unchanged_updates_do_not_cast() {
+        for accepted in [true, false] {
+            let mut t = trace();
+            let ack = json!({"file":t.file,"schema":t.schema,"revision":42,"accepted":accepted,"changed":false}).to_string();
+            assert!(t.message("cranpose.dev.values.result", &ack));
+            assert!(t.request().is_none());
+        }
+    }
+    #[test]
+    fn frame_and_composition_can_arrive_in_either_order() {
+        for frame_first in [true, false] {
+            let mut t = trace();
+            let old_frame = Instant::now();
+            let ack = json!({"file":t.file,"schema":t.schema,"revision":42,"accepted":true,"changed":true,"generation":7}).to_string();
+            t.message("cranpose.dev.values.result", &ack);
+            let mut frame = Instant::now();
+            assert!(
+                !t.follows(frame),
+                "A frame alone cannot confirm composition"
+            );
+            t.message("cranpose.dev.composed", "{\"generation\":7}");
+            if !frame_first {
+                frame = Instant::now();
+            }
+            assert!(!t.follows(old_frame));
+            assert!(t.follows(frame));
+            assert!(
+                t.request().is_some(),
+                "A settled frame must not need another repaint"
+            );
+        }
     }
 }

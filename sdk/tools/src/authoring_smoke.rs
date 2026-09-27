@@ -187,6 +187,49 @@ pub fn run(options: Options) -> Result<()> {
                 .float(60.0),
         )?;
         send(Packet::new(13).int(lightning_surface).byte(1))?;
+        send(Packet::message("ide.authoring.bolt", &json!({"request":100+scale,"phase":"pending","from":[40,80],"target":[520,170,92,24],"size":[640,300]}).to_string()))?;
+        let charging = Instant::now();
+        let mut pending_frames = 0;
+        let mut pending_capture = crate::ui_probe::FrameCapture::default();
+        while charging.elapsed() < Duration::from_secs(10) && pending_frames < 3 {
+            if let Ok(event) = receive.recv_timeout(Duration::from_millis(50))
+                && let Event::Frame(mut frame) = event?
+                && frame.surface == lightning_surface
+            {
+                frame.surface = 0;
+                pending_capture.update(&frame);
+                let (painted, target) = pending_capture
+                    .alpha_counts(30, [516 * scale, 166 * scale, 616 * scale, 198 * scale]);
+                ensure!(
+                    target == 0,
+                    "Pending effect must not claim the target is ready"
+                );
+                if painted > 50 {
+                    pending_frames += 1;
+                }
+            }
+        }
+        ensure!(
+            pending_frames >= 3,
+            "Charging shader did not animate at {scale}x"
+        );
+        send(Packet::message("ide.authoring.bolt", "{\"clear\":true}"))?;
+        let cancelled = Instant::now();
+        let mut cleared = false;
+        while cancelled.elapsed() < Duration::from_secs(3) {
+            if let Ok(event) = receive.recv_timeout(Duration::from_millis(50))
+                && let Event::Frame(mut frame) = event?
+                && frame.surface == lightning_surface
+            {
+                frame.surface = 0;
+                pending_capture.update(&frame);
+                if pending_capture.alpha_counts(0, [0; 4]).0 == 0 {
+                    cleared = true;
+                    break;
+                }
+            }
+        }
+        ensure!(cleared, "Cancelled charging must clear the overlay");
         send(Packet::message(
             "ide.authoring.bolt",
             &json!({"request":scale,"from":[40,80],"target":[520,170,92,24],"size":[640,300]})
@@ -246,7 +289,7 @@ pub fn run(options: Options) -> Result<()> {
             "Lightning must finish transparent at {scale}x"
         );
         let animation_cpu = crate::process_metrics::sample(&[child.id()])?[0] - animation_cpu;
-        lightning.push(json!({"scale":scale,"frames":frames,"paintedPixels":brightest,"impactPixels":target_pixels,"finishedTransparent":true,"firstPaintMs":first_paint.map(|t|t.as_secs_f64()*1000.0),"transparentMs":transparent.map(|t|t.as_secs_f64()*1000.0),"cpuSeconds":animation_cpu,"observationSeconds":started.elapsed().as_secs_f64()}));
+        lightning.push(json!({"scale":scale,"pendingFrames":pending_frames,"cancelledPending":cleared,"frames":frames,"paintedPixels":brightest,"impactPixels":target_pixels,"finishedTransparent":true,"firstPaintMs":first_paint.map(|t|t.as_secs_f64()*1000.0),"transparentMs":transparent.map(|t|t.as_secs_f64()*1000.0),"cpuSeconds":animation_cpu,"observationSeconds":started.elapsed().as_secs_f64()}));
         // PNG encoding must not hold up the frame receiver or its acknowledgments.
         evidence.context("Lightning evidence")?.save(
             &options

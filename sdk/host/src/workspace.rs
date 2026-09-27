@@ -40,6 +40,10 @@ struct State {
     last_frame: Option<std::time::Instant>,
 }
 impl Workspace {
+    pub fn has_preview(&self) -> bool {
+        let state = self.state.lock().expect("workspace");
+        state.active.is_some() || state.candidate.is_some()
+    }
     pub fn trace(&self, trace: Option<crate::feedback::Trace>) {
         let pending = {
             let mut state = self.state.lock().expect("workspace");
@@ -432,6 +436,44 @@ impl Workspace {
         *panel.on_message.lock().expect("callback") =
             Some(Arc::new(move |j, panel, channel, payload| {
                 if let Some(workspace) = weak.upgrade() {
+                    if matches!(
+                        channel,
+                        "cranpose.dev.values.result" | "cranpose.dev.composed"
+                    ) {
+                        let (rejected, trace, request) = {
+                            let mut state = workspace.state.lock().expect("workspace");
+                            if state.active.as_ref().is_none_or(|a| a.0 != id) {
+                                return Ok(());
+                            }
+                            let rejected = state
+                                .trace
+                                .as_mut()
+                                .is_some_and(|t| t.message(channel, payload));
+                            let trace = state.trace.clone();
+                            if rejected {
+                                state.trace = None;
+                            }
+                            // Cranpose queues outgoing composition messages. A
+                            // changed frame may arrive before its confirmation.
+                            // Require both, accepting either delivery order.
+                            let last_frame = state.last_frame;
+                            let request = state.trace.as_mut().and_then(|t| {
+                                last_frame
+                                    .filter(|frame| t.follows(*frame))
+                                    .and_then(|_| t.request())
+                            });
+                            (rejected, trace, request)
+                        };
+                        if let Some(trace) = trace {
+                            trace.log(j, channel, payload)?;
+                        }
+                        if rejected {
+                            crate::feedback::stop(&workspace.project, j)?;
+                        }
+                        if let Some(request) = request {
+                            panel.message("cranpose.inspector.v2.request", &request.to_string());
+                        }
+                    }
                     if channel == "cranpose.inspector.v2.snapshot"
                         && crate::feedback::is_reply(payload)
                     {
@@ -579,6 +621,7 @@ impl Workspace {
     }
     fn close_child(&self, j: &mut J<'_>, panel: &Panel) -> Result<()> {
         self.trace(None);
+        crate::feedback::stop(&self.project, j)?;
         *panel.on_presented.lock().expect("callback") = None;
         *panel.on_lifecycle.lock().expect("callback") = None;
         panel.close(j)?;

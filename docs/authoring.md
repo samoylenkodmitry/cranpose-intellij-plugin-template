@@ -36,8 +36,10 @@ get a document gutter action independent of the language plugin's PSI markers.
 
 The host parses selected documents off the IDE event thread, discards stale
 results and sends `cranpose.dev.values` to connected previews. This includes
-valid unsaved edits. Hovering a live expression or its glyph opens a Cranpose
-control immediately, without taking keyboard focus. Clicking focuses it. One
+valid unsaved edits. Hovering a live glyph or color swatch opens a Cranpose
+control immediately, without taking keyboard focus. Source text stays available
+for caret placement and selection; clicking it dismisses an open control. Clicking
+the glyph focuses its control. One
 native control renderer is warmed per project and reused across popups. Escape
 and outside clicks dismiss the popup; remaining over the same target does not
 reopen it. Session IDs reject delayed edits from previously displayed values.
@@ -148,3 +150,28 @@ Their optional frame capture is reported in the color-frame timings and adds
 copying overhead; ordinary startup/idle measurement sessions leave it disabled.
 Snapshot polling
 adds up to approximately 200 ms; these are not display presentation timings.
+
+## Live edit feedback
+
+An edited live value charges a small cyan/violet constellation at its source.
+The host waits for an acknowledgment identifying the exact file, schema and
+revision, a frame received after acceptance, and composition confirmation for
+that generation. Queued composition messages can arrive after the changed frame;
+either delivery order is accepted. A bounded inspector request then locates the affected view.
+The arrival draws an 850 ms lightning arc, expanding contour and sparks.
+Rejected or superseded edits cancel the effect; a ten-second deadline bounds
+pending work. The overlay passes pointer input through to the editor.
+
+Text matches both source provenance and its new displayed value. Array elements
+can flow through immutable bindings, tuples, `for`, `iter`, `into_iter` and
+`enumerate`. These flow records do not turn a loop variable into an ambiguous
+single-value control. Numbers, colors and booleans can match a unique component
+call through direct arguments and supported immutable aliases. Duplicate views,
+unknown data flow, offscreen targets and truncated trees are skipped.
+
+The consuming preview runtime echoes `file`, `schema`, `revision`, `accepted`,
+`changed` and `generation` in `cranpose.dev.values.result`, then emits
+`cranpose.dev.composed` with `generation` from a composition side effect.
+`hot-smoke --live-values-rounds` checks these confirmations. Native authoring
+tests check pending pixels, cancellation, arrival and settled transparency at
+both scales. No feedback timer or idle snapshot loop is added.
