@@ -70,6 +70,7 @@ jobs:
       - run: cargo run --locked -p cranpose-template-tools -- release audit-source
       - run: cargo run --locked -p cranpose-template-tools -- fetch-ide
       - run: cargo run --locked -p cranpose-template-tools -- ide-test --ide "$CRANPOSE_TEST_IDE"
+      - run: cargo build --locked --no-default-features -p cranpose-intellij-ui
       - run: cargo run --locked -p cranpose-template-tools -- authoring-smoke --binary target/debug/cranpose-intellij-ui --log authoring.log --report authoring.json
       - uses: actions/upload-artifact@v7
         if: always()
