@@ -289,7 +289,7 @@ fn verify_view(
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|node| node["text"].is_string())
+        .filter(|node| node["text"].as_str().is_some_and(|text| !text.is_empty()))
         .take(60)
         .map(|node| json!({"text":node["text"],"x":node["x"],"y":node["y"]}))
         .collect();
@@ -305,7 +305,27 @@ fn center(node: &Value) -> (f32, f32) {
 }
 
 fn click(host: &crate::hot_smoke::Host, view: &Value, text: &str) -> Result<()> {
-    let (x, y) = center(text_node(view, text).context("Missing inspector control")?);
+    // Large wheel gestures can leave overscroll animation moving a matching row.
+    // A semantic match alone is not a stable hit target, especially in debug builds.
+    let position = std::cell::Cell::new(center(
+        text_node(view, text).context("Missing inspector control")?,
+    ));
+    let stable_since = std::cell::Cell::new(Instant::now());
+    let settled = verify_view(host, &format!("stable bounds for {text}"), |view| {
+        let Some(node) = text_node(view, text) else {
+            stable_since.set(Instant::now());
+            return false;
+        };
+        let current = center(node);
+        let previous = position.get();
+        if (current.0 - previous.0).abs() > 0.25 || (current.1 - previous.1).abs() > 0.25 {
+            position.set(current);
+            stable_since.set(Instant::now());
+        }
+        stable_since.get().elapsed() >= Duration::from_millis(100)
+    })?;
+    let (x, y) = center(text_node(&settled, text).context("Settled inspector control")?);
+    eprintln!("Click {text:?} at {x}, {y}");
     for kind in [3, 4] {
         host.send(Packet::new(kind).int(0).float(x).float(y))?;
     }
@@ -322,11 +342,28 @@ fn exercise_tree(host: &crate::hot_smoke::Host, nodes: &[Value]) -> Result<Value
     let first = label(0);
     let last = label(nodes.len() - 1);
     let view = verify_text(host, &first)?;
-    let (x, y) = center(text_node(&view, &first).context("First row")?);
+    let first_node = text_node(&view, &first).context("First row")?;
+    let (x, y) = center(first_node);
+    let ui_nodes = view["nodes"].as_array().context("UI nodes")?;
+    let parent = |node: &Value| {
+        ui_nodes
+            .iter()
+            .find(|candidate| candidate["id"] == node["parent"])
+    };
+    let row = parent(first_node).context("Layout row")?;
+    let viewport = parent(row).context("Scrollable tree viewport")?;
+    let number = |node: &Value, key| node[key].as_f64().unwrap_or_default() as f32;
+    let top_y = number(viewport, "y");
+    let bottom_y = top_y + number(viewport, "height");
+    // Reach the end exactly. An arbitrarily huge wheel delta leaves rubber-band
+    // overscroll whose position can change when the next pointer gesture begins.
+    let distance =
+        (nodes.len() as f32 * number(row, "height") - number(viewport, "height")).max(0.0);
+    ensure!(distance > 0.0, "Fixture does not scroll");
     let visible = |view: &Value, text: &str| {
         text_node(view, text).is_some_and(|node| {
             let (_, row_y) = center(node);
-            row_y >= y - 14.0 && row_y < 790.0
+            row_y >= top_y && row_y < bottom_y
         })
     };
     let scroll = |delta| {
@@ -340,7 +377,7 @@ fn exercise_tree(host: &crate::hot_smoke::Host, nodes: &[Value]) -> Result<Value
                 .byte(0),
         )
     };
-    scroll(-(nodes.len() as f32 * 40.0))?;
+    scroll(-distance)?;
     let bottom = verify_view(host, "last row at the bottom", |view| visible(view, &last))?;
     click(host, &bottom, "Collapse all")?;
     let collapsed = verify_view(host, "collapsed tree after scrolling", |view| {
@@ -350,11 +387,11 @@ fn exercise_tree(host: &crate::hot_smoke::Host, nodes: &[Value]) -> Result<Value
     let expanded = verify_view(host, "expanded first row", |view| {
         visible(view, &first) && text_node(view, &label(1)).is_some()
     })?;
-    scroll(-(nodes.len() as f32 * 40.0))?;
+    scroll(-distance)?;
     verify_view(host, "last row after expansion", |view| {
         visible(view, &last)
     })?;
-    scroll(nodes.len() as f32 * 40.0)?;
+    scroll(distance)?;
     let top = verify_view(host, "first row after return", |view| visible(view, &first))?;
     // The text field is immediately left of Clear and below its label.
     let (clear_x, field_y) = center(text_node(&top, "Clear").context("Clear control")?);
