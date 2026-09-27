@@ -1,8 +1,10 @@
 //! Publish generated files once, preserving Cargo fingerprints on later launches.
 mod derived;
+mod executable;
 mod lease;
 use anyhow::{Context, Result, ensure};
 pub use derived::DerivedFile;
+pub use executable::publish_executable;
 pub use lease::WorkspaceLease;
 use sha2::{Digest, Sha256};
 use std::{

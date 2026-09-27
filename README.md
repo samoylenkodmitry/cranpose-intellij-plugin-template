@@ -210,6 +210,16 @@ cost included in the per-round latency measurements.
 
 ### Compiler identity during overlapping previews
 
+`cranpose_plugin_cache::publish_executable` stages an authenticated executable,
+closes its writable handle, runs caller-provided validation, and publishes it
+without replacing another installer’s winner. Linux refuses to execute a file
+while it remains open for writing. Failed and losing candidates are cleaned up;
+existing executables are validated without rewriting them. Cache tests execute
+real Rust binaries before and after publication on Linux, macOS and Windows.
+Transient `ExecutableFileBusy` errors from descriptors briefly inherited by
+another fork are retried within a 500 ms budget; other validation errors return
+immediately. The caller still owns the validator's execution timeout.
+
 `WorkspaceLease::stage_executable` gives a self-contained compiler tool a stable
 path per lease. It uses a hard link, or copies across filesystems with executable
 permissions preserved. Stage before starting users; keep the source immutable
