@@ -737,10 +737,14 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
         &[A::O(&point), A::O(&class)],
     )?;
     let mut state = project.authoring.lock().expect("authoring");
-    let mut literal = state
-        .placed
-        .iter()
-        .find_map(|p| j.same(&p.object, &inlay).ok().filter(|v| *v).and(p.literal));
+    let mut literal = if inlay.is_null() {
+        None
+    } else {
+        state
+            .placed
+            .iter()
+            .find_map(|p| j.same(&p.object, &inlay).ok().filter(|v| *v).and(p.literal))
+    };
     // Hover either the glyph or the source expression. IntelliJ provides UTF-16
     // positions, including supplementary Unicode and soft-wrap geometry.
     if literal.is_none()
@@ -967,6 +971,18 @@ fn open_control(
                     return Ok(());
                 }
                 if project.authoring.lock().expect("authoring").control_request != request {
+                    return Ok(());
+                }
+                let popup = project
+                    .authoring
+                    .lock()
+                    .expect("authoring")
+                    .popup
+                    .as_ref()
+                    .map(|p| p.0.clone());
+                if let Some(popup) = popup
+                    && j.bool(&popup, "isDisposed")?
+                {
                     return Ok(());
                 }
                 let Some(payload) = pending.lock().expect("pending edit").take() else {
