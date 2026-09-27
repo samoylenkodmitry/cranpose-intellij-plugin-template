@@ -11,6 +11,7 @@ use cranpose_ui_graphics::{
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
+mod color;
 mod design;
 pub use design::{ActionChip, ArrivalAccent};
 
@@ -211,6 +212,7 @@ pub fn ValueControl() {
     let suffix = rememberMutableStateOf(String::new);
     let field = remember(|| TextFieldState::new("")).with(|v| *v);
     let original = rememberMutableStateOf(String::new);
+    let color = rememberMutableStateOf(|| color::ColorDraft::new("0,0,0,1").expect("opaque black"));
     let message = rememberMutableStateOf(|| "Applies to source · Undo in the editor".to_owned());
     let ready = rememberMutableStateOf(|| false);
     CollectEvents(
@@ -221,9 +223,10 @@ pub fn ValueControl() {
                 let literal = &v["literal"];
                 let text = literal["value"].as_str().unwrap_or_default();
                 field.set_text(if literal["kind"] == "color" {
-                    design::parse_color(text)
-                        .map(design::hex)
-                        .unwrap_or_default()
+                    let draft = color::ColorDraft::new(text).unwrap_or_else(|| color.get());
+                    let display = draft.text.clone();
+                    color.set(draft);
+                    display
                 } else {
                     text.into()
                 });
@@ -287,7 +290,7 @@ pub fn ValueControl() {
             );
             let current_kind = kind.get();
             if current_kind == "color" {
-                design::ColorControls(field, colors);
+                design::ColorControls(field, color, colors);
             } else if matches!(current_kind.as_str(), "int" | "float") {
                 cranpose::key(current_kind.clone(), move || {
                     design::NumberControls(field, current_kind == "int", suffix.get(), colors)
@@ -331,8 +334,10 @@ pub fn ValueControl() {
                     ControlButton("Apply", colors, move || {
                         if ready.get() {
                             if kind.get() == "color" {
-                                if let Some(c) = design::parse_color(&field.text()) {
-                                    submit(&design::wire(c));
+                                let mut draft = color.get();
+                                if draft.sync_text(&field.text()).is_some() {
+                                    submit(&draft.source);
+                                    color.set(draft);
                                 } else {
                                     message.set("Enter #RRGGBB or #RRGGBBAA".into());
                                 }
@@ -344,9 +349,11 @@ pub fn ValueControl() {
                     ControlButton("Reset", colors, move || {
                         let text = original.get();
                         field.set_text(if kind.get() == "color" {
-                            design::parse_color(&text)
-                                .map(design::hex)
-                                .unwrap_or_default()
+                            let draft =
+                                color::ColorDraft::new(&text).unwrap_or_else(|| color.get());
+                            let display = draft.text.clone();
+                            color.set(draft);
+                            display
                         } else {
                             text.clone()
                         });

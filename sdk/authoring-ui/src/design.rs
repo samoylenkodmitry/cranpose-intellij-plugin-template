@@ -469,22 +469,21 @@ pub(crate) fn NumberControls(field: TextFieldState, integer: bool, suffix: Strin
 }
 
 #[composable]
-pub(crate) fn ColorControls(field: TextFieldState, colors: Colors) {
-    let hsva =
-        rememberMutableStateOf(|| hsv(parse_color(&field.text()).unwrap_or([0.0, 0.0, 0.0, 1.0])));
-    let last = rememberMutableStateOf(|| field.text());
-    if last.get() != field.text()
-        && let Some(c) = parse_color(&field.text())
-    {
-        hsva.set(hsv(c));
-        last.set(field.text());
+pub(crate) fn ColorControls(
+    field: TextFieldState,
+    draft: cranpose_core::MutableState<super::color::ColorDraft>,
+    colors: Colors,
+) {
+    let mut next = draft.get();
+    if next.sync_text(&field.text()) == Some(true) {
+        draft.set(next);
     }
     let gesture = rememberMutableStateOf(|| 1u64);
     Column(
         Modifier::empty().fill_max_width(),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(4.0)),
         move || {
-            ColorPreview(rgb(hsva.get()));
+            ColorPreview(draft.get().rgba);
             Text(
                 "Drag to preview · one Undo per gesture",
                 Modifier::empty().padding(4.0),
@@ -502,9 +501,9 @@ pub(crate) fn ColorControls(field: TextFieldState, colors: Colors) {
                             Text(label, Modifier::empty(), style(colors.muted, 11.0));
                             Text(
                                 if index == 0 {
-                                    format!("{:.0}°", hsva.get()[index] * 360.0)
+                                    format!("{:.0}°", draft.get().hsva[index] * 360.0)
                                 } else {
-                                    format!("{:.0}%", hsva.get()[index] * 100.0)
+                                    format!("{:.0}%", draft.get().hsva[index] * 100.0)
                                 },
                                 Modifier::empty(),
                                 style(colors.text, 11.0),
@@ -512,19 +511,16 @@ pub(crate) fn ColorControls(field: TextFieldState, colors: Colors) {
                         },
                     );
                     Seekbar(
-                        hsva.get()[index] as f32,
+                        draft.get().hsva[index] as f32,
                         colors,
                         index + 1,
-                        hsva.get(),
+                        draft.get().hsva,
                         move |fraction| {
-                            let mut h = hsva.get();
-                            h[index] = f64::from(fraction);
-                            hsva.set(h);
-                            let c = rgb(h);
-                            let text = hex(c);
-                            last.set(text.clone());
-                            field.set_text(&text);
-                            seek(&wire(c), gesture.get());
+                            let mut next = draft.get();
+                            next.seek(index, fraction);
+                            field.set_text(&next.text);
+                            seek(&next.source, gesture.get());
+                            draft.set(next);
                         },
                         move || gesture.set(gesture.get().wrapping_add(1)),
                     );

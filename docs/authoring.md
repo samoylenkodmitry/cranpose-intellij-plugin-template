@@ -59,6 +59,14 @@ and computed channels are not grouped; eligible scalar arguments still have
 individual controls inside composables. Helper values take effect when
 the helper is called again.
 
+The hex label is a display value: opening the picker or applying it unchanged
+preserves the original float channels. Opacity edits preserve RGB, and HSV edits
+preserve alpha. Newly generated channels use at most six decimal places (at most
+0.0000005 rounding error per normalized channel). This also applies when entering
+a new hex value; every 8-bit channel still converts back to the same byte.
+Slider gestures retain their HSV state without repeatedly converting through
+the hex label. Reset restores the original channels, including their precision.
+
 Text in `format!`, `std::format!` and `alloc::format!` is live inside composables.
 The private copy preserves compiler-owned fields and adds named runtime text
 arguments. Escaped braces, raw strings, captured identifiers, positional and
@@ -108,6 +116,9 @@ fails this regression because its selection menu intercepts Apply.
 It also drags a custom numeric range, drags and resets a color, saves PNG evidence,
 verifies source-arrival animation, and requires zero settled frames from both
 the editor overlay and the unfocused color control.
+Color checks cover unchanged Apply, independent opacity/HSV changes, Apply after
+Reset, explicit hex input and invalid partial hex. Model tests repeat 1,000
+close/reopen cycles to check for accumulated quantization.
 
 `hot-smoke --live-values-rounds 6` additionally sends unsaved value updates over
 the production host protocol, confirms matching snapshots and unchanged PID and
