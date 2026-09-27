@@ -206,3 +206,23 @@ Use `--change-seconds 20` to sample CPU while changing every node label every
 500 ms. This interval sends no UI-inspection requests; the last changed label is
 verified afterward. This separates normal update work from the acknowledgement
 cost included in the per-round latency measurements.
+
+### Compiler identity during overlapping previews
+
+`WorkspaceLease::stage_executable` gives a self-contained compiler tool a stable
+path per lease. It uses a hard link, or copies across filesystems with executable
+permissions preserved. Stage before starting users; keep the source immutable
+while they run. Only call `complete` after every descendant has exited.
+
+Cargo includes `RUSTC_WORKSPACE_WRAPPER` in workspace artifact hashes. Dioxus uses
+its own executable as that wrapper, so a leased alias separates application
+incremental outputs while external dependencies still share the Cargo target
+cache. Reusing the lease keeps the alias path. Interrupted leases stay abandoned.
+
+`hot-smoke --startup-only --restart-rounds 2 --profile-startup --build-diagnostics
+--require-isolated-restarts` verifies that overlapping fixture previews have
+distinct compiler aliases and application artifact suffixes, reused paths keep
+their identities, and both support crates remain fresh. Reports include the
+paths and suffixes. This checks cache structure; timing gains require controlled
+before/after measurements. Existing response and descendant-exit assertions still
+apply. Harness timing ends at a snapshot, later than the IDE's connection swap.

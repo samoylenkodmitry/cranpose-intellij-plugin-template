@@ -62,6 +62,7 @@ impl WorkspaceLease {
         Self::claim(slot, lock, false)
     }
     fn claim(slot: PathBuf, lock: File, reused: bool) -> Result<Self> {
+        let slot = slot.canonicalize()?;
         // Claim before clearing; interruption at any point leaves an unusable slot.
         fs::write(slot.join("state"), BUSY)?;
         let directory = slot.join("workspace");
@@ -87,6 +88,42 @@ impl WorkspaceLease {
     pub fn path(&self) -> &Path {
         &self.directory
     }
+    /// Give a self-contained tool a stable executable path belonging to this lease.
+    /// Cargo includes its workspace-wrapper path in artifact hashes: separate aliases
+    /// let overlapping workspaces retain independent incremental outputs while sharing
+    /// dependency builds. A symlink would canonicalize back to the shared source.
+    ///
+    /// Call before starting users of this lease. The source must remain immutable while
+    /// users run; a hard link avoids copying large tools, with a copy fallback across
+    /// filesystems. Re-stage on each acquisition to pick up a replaced source executable.
+    /// The source's executable permissions and filename (including .exe) are preserved.
+    pub fn stage_executable(&self, source: &Path) -> Result<PathBuf> {
+        let source = source.canonicalize().context("resolve tool executable")?;
+        ensure!(source.is_file(), "Tool executable is not a regular file");
+        ensure!(
+            !source.starts_with(&self.slot),
+            "Tool source belongs to this lease"
+        );
+        let identity = Sha256::digest(source.as_os_str().as_encoded_bytes());
+        let directory = self.slot.join("tools").join(format!("{identity:x}"));
+        fs::create_dir_all(&directory)?;
+        let alias = directory.join(source.file_name().context("tool filename")?);
+        match fs::symlink_metadata(&alias) {
+            Ok(metadata) => {
+                ensure!(
+                    metadata.file_type().is_file(),
+                    "Tool alias is not a regular file"
+                );
+                fs::remove_file(&alias)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        if fs::hard_link(&source, &alias).is_err() {
+            copy_executable(&source, &alias)?;
+        }
+        Ok(alias)
+    }
     pub fn reused(&self) -> bool {
         self.reused
     }
@@ -98,9 +135,64 @@ impl WorkspaceLease {
     }
 }
 
+fn copy_executable(source: &Path, destination: &Path) -> Result<()> {
+    let mut output = File::create_new(destination)?;
+    let mut input = File::open(source)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.set_permissions(input.metadata()?.permissions())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn executable_aliases_follow_lease_ownership_and_refresh() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("compiler.exe");
+        fs::write(&source, "first tool")?;
+        let cache = root.path().join("cache");
+        let first = WorkspaceLease::acquire(&cache, b"project")?;
+        let first_alias = first.stage_executable(&source)?;
+        let second = WorkspaceLease::acquire(&cache, b"project")?;
+        let second_alias = second.stage_executable(&source)?;
+        assert_ne!(first_alias, second_alias);
+        assert_ne!(first_alias.canonicalize()?, source.canonicalize()?);
+        assert_eq!(first_alias.file_name(), source.file_name());
+        first.complete()?;
+        // Model an atomic tool update after the first owner's processes have exited.
+        fs::remove_file(&source)?;
+        fs::write(&source, "second tool")?;
+        let reused = WorkspaceLease::acquire(&cache, b"project")?;
+        assert_eq!(reused.stage_executable(&source)?, first_alias);
+        assert_eq!(fs::read_to_string(&first_alias)?, "second tool");
+        assert_eq!(fs::read_to_string(&second_alias)?, "first tool");
+        Ok(())
+    }
+    #[test]
+    fn copied_executables_preserve_contents_and_permissions_without_overwriting() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = std::env::current_exe()?;
+        let destination = root.path().join("copy.exe");
+        copy_executable(&source, &destination)?;
+        assert_eq!(fs::read(&source)?, fs::read(&destination)?);
+        assert_eq!(
+            fs::metadata(&source)?.permissions(),
+            fs::metadata(&destination)?.permissions()
+        );
+        assert!(copy_executable(&source, &destination).is_err());
+        Ok(())
+    }
+    #[test]
+    fn alias_rejects_non_files_and_lease_owned_sources() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let lease = WorkspaceLease::acquire(root.path(), b"project")?;
+        assert!(lease.stage_executable(root.path()).is_err());
+        let source = lease.path().join("tool");
+        fs::write(&source, "tool")?;
+        assert!(lease.stage_executable(&source).is_err());
+        Ok(())
+    }
     #[test]
     fn active_and_abandoned_slots_are_not_reused() -> Result<()> {
         let root = tempfile::tempdir()?;

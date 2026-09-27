@@ -49,6 +49,9 @@ pub struct Options {
     /// Start replacements while the current preview stays alive, as IDE Restart does.
     #[arg(long, default_value_t = 0, requires = "startup_only", value_parser = clap::value_parser!(u32).range(0..=20))]
     pub restart_rounds: u32,
+    /// Require distinct compiler paths and application artifacts during overlapping Restart.
+    #[arg(long, requires_all = ["restart_rounds", "profile_startup", "build_diagnostics"])]
+    pub require_isolated_restarts: bool,
     /// Seconds per idle phase: visible, inspecting every 500 ms, and hidden.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=120))]
     pub idle_seconds: u32,
@@ -195,6 +198,7 @@ impl Host {
         let request_id = self.next_request;
         let deadline = Instant::now() + Duration::from_secs(seconds);
         let mut next = Instant::now();
+        let mut last_text = Vec::<String>::new();
         while Instant::now() < deadline {
             if Instant::now() >= next {
                 self.send(Packet::message(
@@ -215,6 +219,12 @@ impl Host {
                         && payload["requestId"] == request_id
                     {
                         let nodes = payload["nodes"].as_array().context("Inspector nodes")?;
+                        last_text = nodes
+                            .iter()
+                            .filter_map(|n| n["text"].as_str())
+                            .take(16)
+                            .map(|text| text.chars().take(160).collect())
+                            .collect();
                         // A recomposed layout may reach the host before the runtime's
                         // acknowledgement. Wait for both instead of assuming channel order.
                         let acknowledged = after_generation.is_none_or(|previous| {
@@ -236,7 +246,8 @@ impl Host {
             }
         }
         bail!(
-            "Preview never displayed {expected:?}; {} frames",
+            "Preview never displayed {expected:?}; last text {last_text:?}; runtime {}; {} frames",
+            self.runtime,
             self.frames.load(Ordering::Relaxed)
         )
     }
@@ -337,6 +348,10 @@ fn launch(options: &Options, workspace: &std::path::Path) -> Result<StartedPrevi
 }
 
 pub fn run(mut options: Options) -> Result<()> {
+    ensure!(
+        !options.require_isolated_restarts || options.restart_rounds >= 2,
+        "Isolation validation needs at least two overlapping restarts"
+    );
     let fixture_dir = tempfile::tempdir()?;
     let fixture_lease = if options.reuse_fixture {
         Some(cranpose_plugin_cache::WorkspaceLease::acquire(
@@ -404,6 +419,11 @@ pub fn run(mut options: Options) -> Result<()> {
         let mut restarts = Vec::new();
         let base_log = options.log.clone();
         let mut active_pids = pids;
+        let mut active_phases = startup_phases.clone();
+        let mut identities = std::collections::BTreeMap::new();
+        if options.require_isolated_restarts {
+            record_compiler_identity(&mut identities, &active_phases)?;
+        }
         for round in 1..=options.restart_rounds {
             options.log = base_log.with_extension(format!("restart-{round}.log"));
             let StartedPreview {
@@ -416,6 +436,16 @@ pub fn run(mut options: Options) -> Result<()> {
                 cargo_build_ms: next_cargo_ms,
                 startup_phases: next_phases,
             } = launch(&options, &workspace)?;
+            if options.require_isolated_restarts {
+                validate_restart_isolation(&active_phases, &next_phases)?;
+                record_compiler_identity(&mut identities, &next_phases)?;
+                ensure!(
+                    next_support.len() == 2
+                        && next_support.iter().all(|build| build["fresh"] == true),
+                    "Overlapping Restart rebuilt shared support crates: {next_support:?}"
+                );
+            }
+            active_phases = next_phases.clone();
             // The IDE retains the old preview until connection. Keeping it through
             // the first snapshot also verifies that the replacement really renders.
             ensure!(
@@ -572,6 +602,24 @@ fn startup_evidence(log: &str) -> Value {
         .iter()
         .find(|event| event["cranposeDev"] == "workspace")
         .and_then(|event| event["private"].as_str());
+    let compiler_alias = events
+        .iter()
+        .find(|event| event["cranposeDev"] == "compilerAlias")
+        .and_then(|event| event["path"].as_str());
+    let artifact_suffixes: std::collections::BTreeSet<_> = log
+        .lines()
+        .filter(|line| {
+            line.split_once('`')
+                .is_some_and(|(prefix, _)| prefix.contains("Running"))
+                && line.contains("--crate-name cranpose_hot_counter ")
+        })
+        .filter_map(|line| {
+            line.split_once("-C extra-filename=")?
+                .1
+                .split_whitespace()
+                .next()
+        })
+        .collect();
     let timestamp = |message: &str| {
         events.iter().find_map(|event| {
             event["message"].as_str()?.contains(message).then_some(())?;
@@ -584,9 +632,63 @@ fn startup_evidence(log: &str) -> Value {
             (seconds.is_finite() && seconds >= 0.0).then_some(seconds * 1000.0)
         })
     };
-    json!({"runner":runner, "privateWorkspace":private_workspace, "dependencyCacheHit":cache_hit, "workspaceReused":workspace_reused,
+    json!({"runner":runner, "compilerAlias":compiler_alias, "workspaceArtifactSuffixes":artifact_suffixes, "privateWorkspace":private_workspace, "dependencyCacheHit":cache_hit, "workspaceReused":workspace_reused,
         "compilerServingMs":timestamp("Serving your app:"),
         "compilerBuildCompletedMs":timestamp("Build completed successfully")})
+}
+fn compiler_identity(phases: &Value) -> Result<Value> {
+    let alias = phases["compilerAlias"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .context("Missing compiler alias")?;
+    let artifacts = phases["workspaceArtifactSuffixes"]
+        .as_array()
+        .filter(|v| !v.is_empty())
+        .context("Missing application artifact suffixes")?;
+    ensure!(
+        artifacts.iter().all(|a| a
+            .as_str()
+            .is_some_and(|a| a.starts_with('-') && a.len() > 1)),
+        "Invalid application artifact suffix"
+    );
+    Ok(json!({"alias":alias,"artifacts":artifacts}))
+}
+fn record_compiler_identity(
+    identities: &mut std::collections::BTreeMap<String, Value>,
+    phases: &Value,
+) -> Result<()> {
+    let workspace = phases["privateWorkspace"]
+        .as_str()
+        .context("Missing private workspace")?;
+    let identity = compiler_identity(phases)?;
+    if let Some(previous) = identities.insert(workspace.to_owned(), identity.clone()) {
+        ensure!(
+            previous == identity,
+            "Reused workspace changed compiler identity: {workspace}"
+        );
+    }
+    Ok(())
+}
+fn validate_restart_isolation(previous: &Value, next: &Value) -> Result<()> {
+    let before = compiler_identity(previous)?;
+    let after = compiler_identity(next)?;
+    ensure!(
+        previous["privateWorkspace"].is_string()
+            && next["privateWorkspace"].is_string()
+            && previous["privateWorkspace"] != next["privateWorkspace"],
+        "Concurrent previews shared a workspace"
+    );
+    ensure!(
+        before["alias"] != after["alias"],
+        "Concurrent previews shared a compiler alias"
+    );
+    let before = before["artifacts"].as_array().context("artifacts")?;
+    let after = after["artifacts"].as_array().context("artifacts")?;
+    ensure!(
+        !before.iter().any(|a| after.contains(a)),
+        "Concurrent previews shared application artifacts"
+    );
+    Ok(())
 }
 fn cargo_build_ms(log: &str) -> Option<f64> {
     log.lines().find_map(|line| {
@@ -827,6 +929,32 @@ mod tests {
             assert!(phases["workspaceReused"].is_null());
             assert!(phases["compilerServingMs"].is_null());
         }
+    }
+    #[test]
+    fn restart_isolation_requires_distinct_artifacts_and_stable_reused_paths() -> Result<()> {
+        let sample = |workspace, alias, suffix| json!({"privateWorkspace":workspace, "compilerAlias":alias, "workspaceArtifactSuffixes":[suffix]});
+        let first = sample("first", "tool-a", "-111");
+        let second = sample("second", "tool-b", "-222");
+        validate_restart_isolation(&first, &second)?;
+        assert!(validate_restart_isolation(&first, &sample("second", "tool-b", "-111")).is_err());
+        assert!(validate_restart_isolation(&first, &sample("second", "tool-a", "-222")).is_err());
+        assert!(validate_restart_isolation(&first, &Value::Null).is_err());
+        let mut seen = std::collections::BTreeMap::new();
+        record_compiler_identity(&mut seen, &first)?;
+        record_compiler_identity(&mut seen, &second)?;
+        record_compiler_identity(&mut seen, &first)?;
+        assert!(record_compiler_identity(&mut seen, &sample("first", "changed", "-333")).is_err());
+        let log = "noise -C extra-filename=-bad\n    Running `dx rustc --crate-name cranpose_hot_counter --crate-type bin -C extra-filename=-1234 --out-dir target`";
+        for log in [
+            log.to_owned(),
+            log.replace("Running", "\x1b[1m\x1b[92mRunning\x1b[0m"),
+        ] {
+            assert_eq!(
+                startup_evidence(&log)["workspaceArtifactSuffixes"],
+                json!(["-1234"])
+            );
+        }
+        Ok(())
     }
     #[test]
     fn cargo_reported_timing_is_optional_and_handles_minutes() {
