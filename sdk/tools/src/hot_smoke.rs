@@ -43,6 +43,18 @@ pub struct Options {
     /// Simulate ignored build output during each measured edit (fixture only).
     #[arg(long, default_value_t = 0, requires = "fixture")]
     pub background_noise_ms: u64,
+    /// Measure startup without making source edits.
+    #[arg(long)]
+    pub startup_only: bool,
+    /// Seconds per idle phase: visible, inspecting every 500 ms, and hidden.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=120))]
+    pub idle_seconds: u32,
+    /// Include Cargo fingerprint/rebuild reasons in the compiler log.
+    #[arg(long)]
+    pub build_diagnostics: bool,
+    /// Fail if either unchanged hot-reload support crate was recompiled.
+    #[arg(long, requires = "build_diagnostics")]
+    pub require_cached_support: bool,
     /// Write the test result and raw timing samples as JSON.
     #[arg(long)]
     pub report: Option<PathBuf>,
@@ -235,6 +247,9 @@ pub fn run(options: Options) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
+    if options.build_diagnostics {
+        command.env("CARGO_LOG", "cargo::core::compiler::fingerprint=info");
+    }
     if let Some(dx) = options.dx {
         command.env("CRANPOSE_DX", dx.canonicalize()?);
     }
@@ -268,6 +283,28 @@ pub fn run(options: Options) -> Result<()> {
     let snapshot = host.snapshot(&["Count: 0", "Increment"], 30)?;
     let startup_ms = started.elapsed().as_secs_f64() * 1000.0;
     let pid = host.runtime["pid"].clone();
+    let pids = preview_pids(&cleanup, &host, &options.log)?;
+    let build_log = fs::read_to_string(&options.log)?;
+    let support_builds = support_builds(&build_log);
+    let cargo_build_ms = cargo_build_ms(&build_log);
+    if options.require_cached_support {
+        ensure!(
+            support_builds.len() == 2 && support_builds.iter().all(|build| build["fresh"] == true),
+            "Hot-reload support crates were rebuilt or freshness evidence is missing: {support_builds:?}"
+        );
+    }
+    let idle = if options.idle_seconds > 0 {
+        profile_idle(&mut host, &pids, options.idle_seconds)?
+    } else {
+        Vec::new()
+    };
+    if options.startup_only {
+        let shutdown_ms = stop_preview(&mut cleanup.child, &pids)?;
+        let result = json!({"result":"passed", "mode":"startup", "startupMs":startup_ms,
+            "idle":idle, "shutdownMs":shutdown_ms, "stoppedPids":pids, "snapshotPollMs":200, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms});
+        write_report(options.report, &result)?;
+        return Ok(());
+    }
     let label = snapshot["nodes"]
         .as_array()
         .context("nodes")?
@@ -362,19 +399,83 @@ pub fn run(options: Options) -> Result<()> {
         host.runtime["pid"] == pid,
         "Recovery restarted the application"
     );
-    let compiler_pid = fs::read_to_string(&options.log)?
+    let shutdown_ms = stop_preview(&mut cleanup.child, &pids)?;
+    let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change",
+        "startupMs":startup_ms, "backgroundNoiseMs":options.background_noise_ms,
+        "snapshotPollMs":200, "patches":timings, "shutdownMs":shutdown_ms, "stoppedPids":pids, "idle":idle, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms});
+    write_report(options.report, &result)
+}
+fn cargo_build_ms(log: &str) -> Option<f64> {
+    log.lines().find_map(|line| {
+        if !line.contains("Finished") || !line.contains(" profile ") {
+            return None;
+        }
+        let (_, elapsed) = line.rsplit_once("target(s) in ")?;
+        if elapsed.trim().is_empty() {
+            return None;
+        }
+        let seconds = elapsed.split_whitespace().try_fold(0.0, |total, part| {
+            let (number, scale) = if let Some(value) = part.strip_suffix('s') {
+                (value, 1.0)
+            } else {
+                (part.strip_suffix('m')?, 60.0)
+            };
+            let value = number.parse::<f64>().ok()?;
+            (value.is_finite() && value >= 0.0).then_some(total + value * scale)
+        })?;
+        Some(seconds * 1000.0)
+    })
+}
+fn support_builds(log: &str) -> Vec<Value> {
+    let mut crates = std::collections::BTreeMap::new();
+    for event in log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+    {
+        let Some(name) = event["target"]["name"].as_str() else {
+            continue;
+        };
+        if event["reason"] == "compiler-artifact"
+            && matches!(name, "cranpose_dev_macros" | "cranpose_dev_runtime")
+        {
+            let fresh = event["fresh"].as_bool().unwrap_or(false);
+            crates
+                .entry(name.to_owned())
+                .and_modify(|previous| *previous &= fresh)
+                .or_insert(fresh);
+        }
+    }
+    crates
+        .into_iter()
+        .map(|(name, fresh)| json!({"crate":name,"fresh":fresh}))
+        .collect()
+}
+fn write_report(report: Option<PathBuf>, result: &Value) -> Result<()> {
+    if let Some(report) = report {
+        fs::write(report, serde_json::to_vec_pretty(result)?)?;
+    }
+    println!("{result}");
+    Ok(())
+}
+fn preview_pids(cleanup: &Cleanup, host: &Host, log: &std::path::Path) -> Result<[u32; 3]> {
+    let compiler = fs::read_to_string(log)?
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .find(|event| event["cranposeDev"] == "compiler")
         .and_then(|event| event["pid"].as_u64())
-        .context("Missing compiler process identity")? as u32;
-    let pids = [
+        .context("Missing compiler process identity")?;
+    Ok([
         cleanup.child.id(),
-        compiler_pid,
-        pid.as_u64().context("application PID")? as u32,
-    ];
+        compiler.try_into()?,
+        host.runtime["pid"]
+            .as_u64()
+            .context("application PID")?
+            .try_into()?,
+    ])
+}
+fn stop_preview(child: &mut process::Process, pids: &[u32; 3]) -> Result<f64> {
     let stopped = Instant::now();
-    cleanup.child.terminate(Duration::from_secs(2))?;
+    child.terminate(Duration::from_secs(2))?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while pids.iter().any(|pid| process::is_running(*pid)) {
         ensure!(
@@ -383,16 +484,48 @@ pub fn run(options: Options) -> Result<()> {
         );
         thread::sleep(Duration::from_millis(10));
     }
-    let shutdown_ms = stopped.elapsed().as_secs_f64() * 1000.0;
-    let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change",
-        "startupMs":startup_ms, "backgroundNoiseMs":options.background_noise_ms,
-        "snapshotPollMs":200, "patches":timings, "shutdownMs":shutdown_ms, "stoppedPids":pids});
-    if let Some(report) = options.report {
-        fs::write(report, serde_json::to_vec_pretty(&result)?)?;
-    }
-    println!("{result}");
-    Ok(())
+    Ok(stopped.elapsed().as_secs_f64() * 1000.0)
 }
+fn profile_idle(host: &mut Host, pids: &[u32; 3], seconds: u32) -> Result<Vec<Value>> {
+    let mut result = Vec::new();
+    for mode in ["visible", "inspecting", "hidden"] {
+        host.send(Packet::new(13).int(0).byte(u8::from(mode != "hidden")))?;
+        // Let visibility and the initial frame settle outside the measured window.
+        thread::sleep(Duration::from_millis(500));
+        while host.messages.try_recv().is_ok() {}
+        let before = super::process_metrics::sample(pids)?;
+        let frames = host.frames.load(Ordering::Relaxed);
+        let started = Instant::now();
+        let mut request = started;
+        let mut requests = 0;
+        while started.elapsed() < Duration::from_secs(u64::from(seconds)) {
+            if mode == "inspecting" && Instant::now() >= request {
+                host.send(Packet::message(
+                    "cranpose.inspector.v2.request",
+                    r#"{"requestId":1}"#,
+                ))?;
+                request = Instant::now() + Duration::from_millis(500);
+                requests += 1;
+            }
+            while let Ok(message) = host.messages.try_recv() {
+                message?;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let after = super::process_metrics::sample(pids)?;
+        let elapsed = started.elapsed().as_secs_f64();
+        let processes: Vec<_> = ["runner", "compiler", "application"].iter().enumerate().map(|(index, role)| {
+            let cpu = (after[index] - before[index]).max(0.0);
+            json!({"role":role,"pid":pids[index],"cpuSeconds":cpu,"percentOfOneCore":100.0*cpu/elapsed})
+        }).collect();
+        result.push(json!({"mode":mode,"seconds":elapsed,"processes":processes,
+            "frames":host.frames.load(Ordering::Relaxed)-frames,"inspectorRequests":requests,
+            "cpuClockResolutionSeconds":super::process_metrics::RESOLUTION}));
+    }
+    host.send(Packet::new(13).int(0).byte(1))?;
+    Ok(result)
+}
+
 fn wait_log(
     path: &std::path::Path,
     offset: u64,
@@ -480,6 +613,45 @@ impl Drop for Noise {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cargo_reported_timing_is_optional_and_handles_minutes() {
+        assert_eq!(
+            cargo_build_ms("Finished `desktop-dev` profile [unoptimized] target(s) in 1.47s"),
+            Some(1470.0)
+        );
+        assert_eq!(
+            cargo_build_ms("Finished `desktop-dev` profile [unoptimized] target(s) in 1m 03s"),
+            Some(63000.0)
+        );
+        // Cargo colors the status word when CI forces terminal colors.
+        assert_eq!(
+            cargo_build_ms(
+                "\x1b[1m\x1b[92m    Finished\x1b[0m `desktop-dev` profile [unoptimized + debuginfo] target(s) in 3.52s"
+            ),
+            Some(3520.0)
+        );
+        assert_eq!(cargo_build_ms("unrelated log output"), None);
+    }
+    #[test]
+    fn freshness_does_not_hide_an_earlier_rebuild() {
+        let artifact = |name, fresh| {
+            json!({"reason":"compiler-artifact", "target":{"name":name}, "fresh":fresh}).to_string()
+        };
+        let log = [
+            artifact("cranpose_dev_macros", false),
+            artifact("cranpose_dev_runtime", true),
+            artifact("cranpose_dev_macros", true),
+            artifact("application", false),
+        ]
+        .join("\n");
+        assert_eq!(
+            support_builds(&log),
+            vec![
+                json!({"crate":"cranpose_dev_macros","fresh":false}),
+                json!({"crate":"cranpose_dev_runtime","fresh":true})
+            ]
+        );
+    }
     #[test]
     fn measured_snapshot_waits_for_acknowledgement_in_either_message_order() {
         for snapshot_first in [true, false] {

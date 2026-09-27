@@ -1,0 +1,78 @@
+//! Cumulative CPU observations for isolated preview measurements.
+//! ps is a diagnostic child command; no OS process state is changed.
+use anyhow::Result;
+#[cfg(target_os = "macos")]
+pub const RESOLUTION: f64 = 0.01;
+#[cfg(not(target_os = "macos"))]
+pub const RESOLUTION: f64 = 1.0;
+
+#[cfg(unix)]
+pub fn sample(pids: &[u32; 3]) -> Result<[f64; 3]> {
+    use anyhow::{Context, ensure};
+    use std::{process::Command, time::Duration};
+    let mut command = Command::new("ps");
+    command.env("LC_ALL", "C");
+    command.args([
+        "-p",
+        &pids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        "-o",
+        "pid=,time=",
+    ]);
+    let output =
+        cranpose_ide_host::process::capture(command, None, Duration::from_secs(2), || false)?;
+    ensure!(output.status.success(), "CPU sampling failed");
+    let mut values = [None; 3];
+    for line in std::str::from_utf8(&output.stdout)?.lines() {
+        let mut columns = line.split_whitespace();
+        let pid: u32 = columns.next().context("Missing process PID")?.parse()?;
+        let time = parse_time(columns.next().context("Missing process CPU time")?)?;
+        if let Some(index) = pids.iter().position(|candidate| *candidate == pid) {
+            values[index] = Some(time);
+        }
+    }
+    Ok([
+        values[0].context("runner exited during measurement")?,
+        values[1].context("compiler exited during measurement")?,
+        values[2].context("application exited during measurement")?,
+    ])
+}
+#[cfg(not(unix))]
+pub fn sample(_pids: &[u32; 3]) -> Result<[f64; 3]> {
+    anyhow::bail!("--idle-seconds CPU sampling currently requires macOS or Linux")
+}
+#[cfg(any(unix, test))]
+fn parse_time(text: &str) -> Result<f64> {
+    use anyhow::ensure;
+    let (days, clock) = match text.split_once('-') {
+        Some((days, clock)) => (days.parse::<u64>()?, clock),
+        None => (0, text),
+    };
+    let parts: Vec<_> = clock.split(':').collect();
+    ensure!((2..=3).contains(&parts.len()), "Invalid CPU clock: {text}");
+    let mut seconds = 0.0;
+    for part in parts {
+        seconds = seconds * 60.0 + part.parse::<f64>()?;
+    }
+    ensure!(
+        seconds.is_finite() && seconds >= 0.0,
+        "Invalid CPU time: {text}"
+    );
+    Ok(days as f64 * 86400.0 + seconds)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reads_macos_linux_and_long_running_process_clocks() {
+        assert_eq!(parse_time("0:00.59").expect("macOS"), 0.59);
+        assert_eq!(parse_time("01:02:03").expect("Linux"), 3723.0);
+        assert_eq!(parse_time("2-03:04:05.25").expect("days"), 183845.25);
+        for invalid in ["", "1", "00:NaN", "00:-1", "00:00:00:00"] {
+            assert!(parse_time(invalid).is_err());
+        }
+    }
+}

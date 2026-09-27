@@ -2,6 +2,7 @@ mod bridge;
 mod hot_smoke;
 mod ide_test;
 mod package;
+mod process_metrics;
 mod release;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};

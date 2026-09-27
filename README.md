@@ -74,6 +74,7 @@ crates from this repository. There is no dependency back on Studio.
 | `sdk/jvm-bridge` | JVM classfile generation in Rust |
 | `sdk/tools` | Packaging, SDK tests, native verification and release tools |
 | `sdk/ux` | Themes, searchable trees and change-only host message delivery |
+| `sdk/cache` | [Immutable generated assets that preserve build fingerprints](sdk/cache/README.md) |
 | `sdk/process` | [Owned process trees, bounded shutdown and cancellation](sdk/process/README.md) |
 | `sdk/watch` | Bounded, deduplicated file-change batches with quiet and maximum deadlines |
 
@@ -96,6 +97,18 @@ It also records shutdown latency and verifies that the runner, compiler and appl
 `--background-noise-ms N` writes ignored build output during fixture measurements.
 Snapshot observation has a 200 ms polling interval; acknowledgement timestamps
 are captured by the socket reader. Keep benchmarks separate from other builds.
+`--startup-only` stops after the first matching preview snapshot without editing
+source. `--idle-seconds N` measures each preview process with the surface visible,
+inspecting every 500 ms, and hidden; reports include frames, requests and CPU time
+as a percentage of one core. CPU sampling currently uses `ps` on macOS/Linux,
+with 10 ms/1 second clock resolution respectively. Short intervals cannot resolve
+small CPU changes. These measurements cover the isolated preview processes, not
+the entire IDE or Studio tool window.
+`--build-diagnostics --require-cached-support` verifies a warm restart reuses both
+generated support crates; the first launch after a support change must warm them.
+When the log includes Cargo's rounded `Finished` timing, `cargoReportedBuildMs`
+records that phase separately from launch-to-first-snapshot `startupMs`. It is
+null when Cargo's log format provides no recognizable timing.
 
 ## Make it yours
 

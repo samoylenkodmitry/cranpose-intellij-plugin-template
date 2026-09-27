@@ -22,6 +22,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked -p cranpose-plugin-cache
       - run: cargo test --locked -p cranpose-plugin-process -p cranpose-plugin-host --test lifecycle --test session_lifecycle
   native:
     name: Rust host and Cranpose UI (${{ matrix.platform }})
@@ -93,16 +94,16 @@ jobs:
         with:
           pattern: native-*
           path: native
-      - run: cargo run --locked -p cranpose-template-tools -- package --native-dir native
-      - run: cargo run --locked -p cranpose-template-tools -- release check-zip target/plugin/cranpose-template-*.zip
+      - run: cargo run --locked -p cranpose-template-tools -- package --native-dir native --output "${{ runner.temp }}/cranpose-package"
+      - run: cargo run --locked -p cranpose-template-tools -- release check-zip "${{ runner.temp }}/cranpose-package"/cranpose-template-*.zip
       - run: cargo run --locked -p cranpose-template-tools -- fetch-ide
-      - run: cargo run --locked -p cranpose-template-tools -- release verify target/plugin/cranpose-template-*.zip --ide "$CRANPOSE_TEST_IDE"
+      - run: cargo run --locked -p cranpose-template-tools -- release verify "${{ runner.temp }}/cranpose-package"/cranpose-template-*.zip --ide "$CRANPOSE_TEST_IDE"
       - run: cargo run --locked -p cranpose-template-tools -- fetch-ide --product RustRover --version 2026.2.3
-      - run: cargo run --locked -p cranpose-template-tools -- release verify target/plugin/cranpose-template-*.zip --ide "$CRANPOSE_TEST_IDE"
+      - run: cargo run --locked -p cranpose-template-tools -- release verify "${{ runner.temp }}/cranpose-package"/cranpose-template-*.zip --ide "$CRANPOSE_TEST_IDE"
       - uses: actions/upload-artifact@v7
         with:
           name: plugin
-          path: target/plugin/*.zip
+          path: ${{ runner.temp }}/cranpose-package/*.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always()
