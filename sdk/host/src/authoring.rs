@@ -825,7 +825,7 @@ fn open_control(
 
 #[cfg(feature = "ide-tests")]
 pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
-    let source = "#[composable]\nfn Card() { Text(\"Hello\"); Space(12); }";
+    let source = "// 🦀\n#[composable]\nfn Card() { Text(\"Café 🦀\"); Space(12); }";
     let factory = j.static_obj(
         "com/intellij/openapi/editor/EditorFactory",
         "getInstance",
@@ -855,7 +855,14 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             "Expected one preview marker and two live-value glyphs"
         );
         for (object, literal) in items {
-            if literal.is_some() {
+            if let Some(id) = literal {
+                let token = ["\"Café 🦀\"", "12"][id];
+                let byte_end = source.find(token).expect("fixture token") + token.len();
+                ensure!(
+                    j.int(&object, "getOffset")? as usize
+                        == source[..byte_end].encode_utf16().count(),
+                    "Live glyph must follow its literal in IDE UTF-16 coordinates"
+                );
                 project.authoring.lock().expect("authoring").geometry = "cached".into();
                 j.void(&object, "update", "()V", &[])?;
                 // Some IDE versions suppress unchanged update notifications;
