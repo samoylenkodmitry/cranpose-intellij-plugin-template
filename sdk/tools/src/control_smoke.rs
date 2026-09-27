@@ -17,6 +17,7 @@ use std::{
 
 pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
     let mut checks = Vec::new();
+    let select_all_modifier = if cfg!(target_os = "macos") { 8 } else { 2 };
     for scale in [1, 2] {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
@@ -58,11 +59,11 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
         ))?;
         verify_text(&host, "Apply")?;
         pointer(&host, 70.0, 66.0)?;
-        key(&host, "KeyA", 8)?;
+        key(&host, "KeyA", select_all_modifier)?;
         host.send(Packet::new(8).int(0).text("Pointer edit"))?;
         // Selecting text opens the floating selection menu, which used to cover
         // the action row. Test the actual hit targets, not just their bounds.
-        key(&host, "KeyA", 8)?;
+        key(&host, "KeyA", select_all_modifier)?;
         let menu = verify_text(&host, "Copy")?;
         click(&host, &menu, "Apply")?;
         expect_edit(&host, "Pointer edit")?;
@@ -81,11 +82,11 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             ))?;
             verify_text(&host, kind)?;
             pointer(&host, 70.0, 66.0)?;
-            key(&host, "KeyA", 8)?;
+            key(&host, "KeyA", select_all_modifier)?;
             let menu = verify_text(&host, "Copy")?;
             click(&host, &menu, action)?;
             expect_edit(&host, changed)?;
-            key(&host, "KeyA", 8)?;
+            key(&host, "KeyA", select_all_modifier)?;
             let menu = verify_text(&host, "Copy")?;
             click(&host, &menu, "Reset")?;
             expect_edit(&host, initial)?;
