@@ -253,7 +253,7 @@ mod tests {
         assert!(
             starter_manifest("field-notes")
                 .expect("manifest")
-                .contains("e177b19")
+                .contains("0ccc2a2bc4f9ad9002dcdb80ff2e75aa707494bb")
         );
     }
     #[test]
