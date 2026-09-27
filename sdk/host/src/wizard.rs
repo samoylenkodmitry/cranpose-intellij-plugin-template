@@ -198,6 +198,9 @@ fn generate(project: &Arc<Project>, j: &mut J<'_>, root: PathBuf) -> Result<()> 
     Ok(())
 }
 pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
+    if !j.bool(&project.object, "isInitialized")? {
+        return Ok(());
+    }
     let result = project
         .authoring
         .lock()
@@ -210,7 +213,7 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         match result {
             Ok(root) => {
                 let project = project.clone();
-                jvm::later(j, move |j| {
+                jvm::later_non_modal(j, move |j| {
                     if project.closed.load(Ordering::Acquire) {
                         return Ok(());
                     }
@@ -235,7 +238,14 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                         .map(|s| root.join(s))
                         .find(|p| p.is_file())
                         .context("Starter entry file")?;
+                    j.obj(
+                        &fs,
+                        "refreshAndFindFileByPath",
+                        "(Ljava/lang/String;)Lcom/intellij/openapi/vfs/VirtualFile;",
+                        &[A::S(&entry.to_string_lossy())],
+                    )?;
                     project::navigate(&project, j, &entry.to_string_lossy(), 0, 0)?;
+                    attach_cargo(&project, j, &fs, &root)?;
                     Ok(())
                 })?;
             }
@@ -246,6 +256,50 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+// Ask the installed Rust plugin to discover the newly generated manifest. Using
+// its import provider's loader keeps IDEA without Rust support a valid host.
+fn attach_cargo(project: &Project, j: &mut J<'_>, fs: &O, root: &std::path::Path) -> Result<()> {
+    let manifest = j.obj(
+        fs,
+        "refreshAndFindFileByPath",
+        "(Ljava/lang/String;)Lcom/intellij/openapi/vfs/VirtualFile;",
+        &[A::S(&root.join("Cargo.toml").to_string_lossy())],
+    )?;
+    if manifest.is_null() {
+        return Ok(());
+    }
+    let provider = j.static_obj(
+        "com/intellij/projectImport/ProjectOpenProcessor",
+        "getImportProvider",
+        "(Lcom/intellij/openapi/vfs/VirtualFile;)Lcom/intellij/projectImport/ProjectOpenProcessor;",
+        &[A::O(&manifest)],
+    )?;
+    if provider.is_null() || j.text(&provider, "getName")? != "Cargo" {
+        return Ok(());
+    }
+    let class = j.obj(&provider, "getClass", "()Ljava/lang/Class;", &[])?;
+    let loader = j.obj(&class, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?;
+    let service_class = j.obj(
+        &loader,
+        "loadClass",
+        "(Ljava/lang/String;)Ljava/lang/Class;",
+        &[A::S("org.rust.cargo.project.model.CargoProjectsService")],
+    )?;
+    let service = j.obj(
+        &project.object,
+        "getService",
+        "(Ljava/lang/Class;)Ljava/lang/Object;",
+        &[A::O(&service_class)],
+    )?;
+    j.obj(
+        &service,
+        "discoverAndRefresh",
+        "()Ljava/util/concurrent/CompletableFuture;",
+        &[],
+    )?;
     Ok(())
 }
 
