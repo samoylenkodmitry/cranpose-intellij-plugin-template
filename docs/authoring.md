@@ -44,6 +44,28 @@ The value popup keeps its actions in a footer below the text field's floating
 selection menu. Apply uses the IDE accent color. Selection, clipboard actions,
 numeric steps and Reset remain available together without overlapping hit targets.
 
+Numbers also have a seekbar with editable Min, Max and Step. A drag sends complete
+values immediately, with one Undo group per gesture; pending host edits are
+coalesced before the next editor command. Range settings belong to the open
+control. Integer ranges use exact representable values through ±(2^53−1), with
+explicit integer suffix bounds; larger integers retain exact text entry.
+
+`Color(r,g,b,a)` and `Color::rgba(r,g,b,a)` with four normalized float literals
+have one color swatch. This includes ordinary non-const palette functions.
+The Cranpose picker accepts hex and provides hue, saturation, brightness and
+opacity sliders. It replaces all four channels atomically; Reset restores their
+original values. Constants and named colors remain compiled. RGB/u8 constructors
+and computed channels are not grouped; eligible scalar arguments still have
+individual controls inside composables. Helper values take effect when
+the helper is called again.
+
+Text in `format!`, `std::format!` and `alloc::format!` is live inside composables.
+The private copy preserves compiler-owned fields and adds named runtime text
+arguments. Escaped braces, raw strings, captured identifiers, positional and
+named arguments, formatting specifications and argument evaluation are retained.
+Changing a field or specification requires compilation. Other macros, indirect
+format strings and formats with more than 64 fields remain compiled.
+
 A consuming development runner instruments **private debug copies only**.
 The catalog schema includes structure, literal kinds/suffixes and source lines.
 Compatible values update a shared typed store and invalidate composition without
@@ -55,7 +77,7 @@ atomically. Bounded file, slot, value and interned-string budgets stop indefinit
 growth. The transport uses a random token, bounded frames and blocking idle reads;
 a disconnected receiver does not impose repeated reconnect delays on future edits.
 
-Const contexts, patterns, attributes, generic arguments, macro tokens, borrows,
+Const contexts, patterns, attributes, generic arguments, unsupported macros, borrows,
 array repeat lengths and remembered-state initializers are excluded. Identity
 arguments to `key` remain compiled. Structural changes use the runner's compiler
 or restart policy. Values used only in callbacks change on the next invocation.
@@ -68,7 +90,10 @@ Inlays reserve IDE space while a transparent Cranpose overlay draws diamonds,
 static shader underlines and stability badges. Document, viewport, folding,
 inlay and font events invalidate geometry. Unchanged geometry does no rendering
 work. Only visible decorations are sent, with a 256-item rendering budget;
-stability badges have priority. Closing the native process detaches its overlays.
+stability badges have priority. Source navigation adds a 700 ms shader sweep
+following the destination line during scrolling. Button presses and slider
+thumbs have finite transitions; animation respects Cranpose's reduced-motion
+setting. Closing the native process detaches its overlays.
 
 Run `authoring-smoke --binary /path/to/ui --log authoring.log --report authoring.json`
 to verify transparent shader output and zero settled frames over three seconds.
@@ -80,9 +105,17 @@ The same smoke command exercises live-value controls at 1× and 2× scale. It op
 the real selection menu, clicks Apply, Reset, numeric steps and Toggle using
 inspected bounds, and verifies the messages sent to the host. The pre-footer UI
 fails this regression because its selection menu intercepts Apply.
+It also drags a custom numeric range, drags and resets a color, saves PNG evidence,
+verifies source-arrival animation, and requires zero settled frames from both
+the editor overlay and the unfocused color control.
 
 `hot-smoke --live-values-rounds 6` additionally sends unsaved value updates over
 the production host protocol, confirms matching snapshots and unchanged PID and
 disk source, then exercises saved edits and compiler recovery. Runtime
-acknowledgments and matching snapshots are reported separately. Snapshot polling
+acknowledgments and matching snapshots are reported separately. It edits format
+text as well as ordinary strings. Fixtures containing the dedicated palette
+probe additionally require changed framebuffer pixels without a process restart.
+Their optional frame capture is reported in the color-frame timings and adds
+copying overhead; ordinary startup/idle measurement sessions leave it disabled.
+Snapshot polling
 adds up to approximately 200 ms; these are not display presentation timings.

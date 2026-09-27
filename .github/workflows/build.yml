@@ -82,6 +82,7 @@ jobs:
             target/ide-tests/**/log
             authoring.log
             authoring.json
+            authoring-controls-*.png
           if-no-files-found: ignore
   plugin:
     name: Verified plugin (all platforms)

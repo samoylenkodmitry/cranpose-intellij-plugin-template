@@ -55,6 +55,69 @@ macro_rules! numeric {
 numeric!("int"; i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
 numeric!("bool"; bool);
 numeric!("char"; char);
+/// RGBA values use normalized, finite channels. Hex input is an editor concern.
+pub fn color_channels(text: &str) -> Option<[f64; 4]> {
+    let channels = text
+        .split(',')
+        .map(|s| s.trim().parse::<f64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let channels: [f64; 4] = channels.try_into().ok()?;
+    channels
+        .iter()
+        .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+        .then_some(channels)
+}
+macro_rules! colors {
+    ($($ty:ty),*) => {$ (
+        impl Literal for [$ty; 4] {
+            const KIND: &'static str = "color";
+            fn validate(text: &str) -> bool { color_channels(text).is_some() }
+            fn decode(text: &str, _: &BTreeMap<String, &'static str>) -> Option<Self> {
+                color_channels(text).map(|c| c.map(|v| v as $ty))
+            }
+        }
+    )*};
+}
+colors!(f32, f64);
+
+/// Split Rust format text without interpreting its compiler-owned fields.
+/// Escaped braces belong to text; each real field remains byte-for-byte intact.
+pub fn format_parts(text: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let mut parts = vec![String::new()];
+    let mut fields = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        if (c == '{' || c == '}') && chars.peek().is_some_and(|(_, next)| *next == c) {
+            chars.next();
+            parts.last_mut()?.push(c);
+        } else if c == '{' {
+            let mut end = None;
+            for (offset, ch) in chars.by_ref() {
+                if ch == '{' {
+                    return None;
+                }
+                if ch == '}' {
+                    end = Some(offset + 1);
+                    break;
+                }
+            }
+            fields.push(text[start..end?].into());
+            parts.push(String::new());
+        } else if c == '}' {
+            return None;
+        } else {
+            parts.last_mut()?.push(c);
+        }
+    }
+    Some((parts, fields))
+}
+/// Text substitutions are owned Strings, so temporary format arguments retain
+/// normal Rust lifetimes and never allocate unbounded permanent segments.
+pub fn format_text(text: &str, index: usize) -> String {
+    format_parts(text)
+        .and_then(|(parts, _)| parts.into_iter().nth(index))
+        .unwrap_or_default()
+}
 macro_rules! floating {
     ($($ty:ty),*) => {$ (
         impl Literal for $ty {

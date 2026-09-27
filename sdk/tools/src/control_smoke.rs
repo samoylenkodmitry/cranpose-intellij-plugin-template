@@ -1,7 +1,7 @@
 //! Pointer regression for the live-value popup over the native surface protocol.
 use crate::{
     hot_smoke::Host,
-    ui_probe::{click, verify_text},
+    ui_probe::{center, click, text_node, verify_text},
 };
 use anyhow::{Context, Result, ensure};
 use cranpose_ide_host::{process::Process, protocol::Packet};
@@ -19,6 +19,7 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
     let mut checks = Vec::new();
     let select_all_modifier = if cfg!(target_os = "macos") { 8 } else { 2 };
     for scale in [1, 2] {
+        let output = log.parent().unwrap_or(Path::new("."));
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let token = format!("control-{:032x}", rand::random::<u128>());
@@ -43,7 +44,10 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             );
             thread::sleep(Duration::from_millis(10));
         };
-        let host = Host::new(stream, &token)?;
+        let capture = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::ui_probe::FrameCapture::default(),
+        ));
+        let host = Host::capturing(stream, &token, Some(capture.clone()))?;
         host.send(
             Packet::new(1)
                 .int(0)
@@ -76,6 +80,12 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             ("float", "1.5", "−", "0.5"),
             ("bool", "true", "Toggle", "false"),
         ] {
+            resize(
+                &host,
+                scale,
+                if kind == "bool" { 340 } else { 400 },
+                if kind == "bool" { 240 } else { 380 },
+            )?;
             host.send(Packet::message(
                 "ide.authoring.control",
                 &json!({"literal":{"kind":kind,"value":initial}}).to_string(),
@@ -92,13 +102,91 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             expect_edit(&host, initial)?;
             typed.push(json!({"kind":kind,"action":action,"reset":true}));
         }
+        resize(&host, scale, 400, 380)?;
+        host.send(Packet::message(
+            "ide.authoring.control",
+            &json!({"literal":{"kind":"int","value":"41"}}).to_string(),
+        ))?;
+        let view = verify_text(&host, "Set range")?;
+        for (label, value) in [("Min", "-20"), ("Max", "40"), ("Step", "5")] {
+            let node = text_node(&view, label).context("range field label")?;
+            let (x, _) = center(node);
+            pointer(
+                &host,
+                x,
+                node["y"].as_f64().context("label y")? as f32
+                    + node["height"].as_f64().context("height")? as f32
+                    + 14.0,
+            )?;
+            key(&host, "KeyA", select_all_modifier)?;
+            host.send(Packet::new(8).int(0).text(value))?;
+        }
+        let view = verify_text(&host, "Set range")?;
+        click(&host, &view, "Set range")?;
+        let view = verify_text(&host, "-20 → 40")?;
+        thread::sleep(Duration::from_millis(200));
+        capture
+            .lock()
+            .expect("capture")
+            .save(&output.join(format!("authoring-controls-number-{scale}.png")))?;
+        let label = text_node(&view, "SEEK TO PREVIEW").context("seek label")?;
+        let y = label["y"].as_f64().context("y")? as f32
+            + label["height"].as_f64().context("height")? as f32
+            + 6.0
+            + 14.0;
+        host.send(Packet::new(3).int(0).float(24.0).float(y))?;
+        let first = expect_value(&host, "-20")?;
+        for fraction in [0.5f32, 1.0] {
+            host.send(
+                Packet::new(2)
+                    .int(0)
+                    .float(24.0 + 352.0 * fraction)
+                    .float(y),
+            )?;
+            let changed = expect_value(&host, if fraction == 0.5 { "10" } else { "40" })?;
+            ensure!(
+                changed["gesture"] == first["gesture"],
+                "One drag must retain its Undo group"
+            );
+        }
+        host.send(Packet::new(4).int(0).float(376.0).float(y))?;
+        resize(&host, scale, 400, 490)?;
+        host.send(Packet::message(
+            "ide.authoring.control",
+            &json!({"literal":{"kind":"color","value":"1,0,0,1"}}).to_string(),
+        ))?;
+        let view = verify_text(&host, "Hue")?;
+        thread::sleep(Duration::from_millis(200));
+        capture
+            .lock()
+            .expect("capture")
+            .save(&output.join(format!("authoring-controls-color-{scale}.png")))?;
+        let label = text_node(&view, "Hue").context("hue label")?;
+        let y = label["y"].as_f64().context("y")? as f32
+            + label["height"].as_f64().context("height")? as f32
+            + 4.0
+            + 14.0;
+        host.send(Packet::new(3).int(0).float(200.0).float(y))?;
+        expect_edit(&host, "0.0,1.0,1.0,1.0")?;
+        host.send(Packet::new(4).int(0).float(200.0).float(y))?;
+        expect_edit(&host, "0.0,1.0,1.0,1.0")?;
+        let view = verify_text(&host, "Reset")?;
+        click(&host, &view, "Reset")?;
+        expect_edit(&host, "1,0,0,1")?;
+        // Exclude inspector requests and active text-caret blinking from the
+        // settled observation. The last action focused a non-text control.
+        thread::sleep(Duration::from_secs(2));
+        let before = host.frames.load(std::sync::atomic::Ordering::Relaxed);
+        thread::sleep(Duration::from_secs(2));
+        let idle = host.frames.load(std::sync::atomic::Ordering::Relaxed) - before;
+        ensure!(idle == 0, "Settled color controls rendered {idle} frames");
         child.terminate(Duration::from_secs(2))?;
         ensure!(
             child.wait_for_tree_exit(Duration::from_secs(2))?,
             "Control descendants survived shutdown"
         );
         checks.push(
-            json!({"scale":scale,"applyWithSelectionMenu":true,"resetWithSelectionMenu":true,"typedControls":typed}),
+            json!({"scale":scale,"applyWithSelectionMenu":true,"resetWithSelectionMenu":true,"typedControls":typed,"customRangeDrag":true,"colorDrag":true,"settledColorFrames":idle}),
         );
     }
     Ok(json!({"pointerControls":checks}))
@@ -117,6 +205,19 @@ fn key(host: &Host, code: &str, modifiers: u8) -> Result<()> {
     Ok(())
 }
 fn expect_edit(host: &Host, expected: &str) -> Result<()> {
+    expect_value(host, expected).map(|_| ())
+}
+fn resize(host: &Host, scale: u32, width: u32, height: u32) -> Result<()> {
+    host.send(
+        Packet::new(1)
+            .int(0)
+            .int(width * scale)
+            .int(height * scale)
+            .float(scale as f32)
+            .float(60.0),
+    )
+}
+fn expect_value(host: &Host, expected: &str) -> Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         let Ok(event) = host.messages.recv_timeout(Duration::from_millis(100)) else {
@@ -129,7 +230,7 @@ fn expect_edit(host: &Host, expected: &str) -> Result<()> {
                 "Expected {expected:?}, got {payload}"
             );
             host.send(Packet::message("ide.authoring.result", r#"{"ok":true}"#))?;
-            return Ok(());
+            return Ok(payload);
         }
     }
     anyhow::bail!("Pointer control did not submit {expected:?} while selection menu was open")

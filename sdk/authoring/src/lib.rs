@@ -59,6 +59,15 @@ pub struct Catalog {
     pub functions: Vec<Function>,
     pub calls: Vec<Call>,
     pub literals: Vec<Literal>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<Format>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Format {
+    pub literal: usize,
+    pub end: usize,
+    pub prefix: String,
+    pub trailing_comma: bool,
 }
 impl Catalog {
     pub fn parse(source: &str) -> Result<Self> {
@@ -70,9 +79,11 @@ impl Catalog {
         let mut walk = Walk {
             source: SourceIndex::new(source),
             active: false,
+            runtime: false,
             functions: vec![],
             calls: vec![],
             literals: vec![],
+            formats: vec![],
         };
         walk.visit_file_mut(&mut file);
         ensure!(
@@ -97,6 +108,7 @@ impl Catalog {
             functions: walk.functions,
             calls: walk.calls,
             literals: walk.literals,
+            formats: walk.formats,
         })
     }
 
@@ -109,6 +121,13 @@ impl Catalog {
             .literals
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("Unknown live literal"))?;
+        if self.formats.iter().any(|f| f.literal == id) {
+            ensure!(
+                runtime::format_parts(value).map(|(_, fields)| fields)
+                    == runtime::format_parts(&literal.value).map(|(_, fields)| fields),
+                "Keep format fields unchanged; edit placeholders in source to rebuild"
+            );
+        }
         let token = match literal.kind.as_str() {
             "string" => {
                 ensure!(
@@ -134,6 +153,25 @@ impl Catalog {
                     .to_string()
             }
             "int" | "float" => format!("{value}{}", literal.suffix),
+            "color" => {
+                let channels = runtime::color_channels(value).ok_or_else(|| {
+                    anyhow::anyhow!("Expected four RGBA channels between 0 and 1")
+                })?;
+                let mut text = source[literal.range.start..literal.range.end].to_owned();
+                let index = SourceIndex::new(&text);
+                let original: syn::ExprCall = syn::parse_str(&text)?;
+                for ((argument, value), suffix) in original
+                    .args
+                    .iter()
+                    .zip(channels)
+                    .zip(literal.suffix.split(',').collect::<Vec<_>>())
+                    .rev()
+                {
+                    let range = index.range(argument.span());
+                    text.replace_range(range.start..range.end, &format!("{value:?}{suffix}"));
+                }
+                text
+            }
             _ => anyhow::bail!("Unsupported literal"),
         };
         let mut result = source.to_owned();
@@ -150,7 +188,50 @@ impl Catalog {
     /// manifest edit or release-build feature is required.
     pub fn instrument(&self, source: &str, file_key: &str) -> String {
         let mut insertions: Vec<(usize, u8, String)> = vec![];
+        let mut replacements = vec![];
         for literal in &self.literals {
+            if literal.kind == "color" {
+                let text = &source[literal.range.start..literal.range.end];
+                if let Some((constructor, arguments)) = text.split_once('(') {
+                    let arguments = arguments.trim_end().trim_end_matches(')');
+                    replacements.push((literal.range.start, literal.range.end, 2, format!("{{ let [__r, __g, __b, __a] = crate::__cranpose_dev::literal({file_key:?}, {:?}, {}, [{arguments}]); {constructor}(__r, __g, __b, __a) }}", self.schema, literal.id)));
+                }
+                continue;
+            }
+            if let Some(format) = self.formats.iter().find(|f| f.literal == literal.id) {
+                let (parts, fields) =
+                    runtime::format_parts(&literal.value).expect("catalog format");
+                let mut template = String::new();
+                let mut arguments = String::new();
+                for (index, _) in parts.iter().enumerate() {
+                    let name = format!("{}{index}", format.prefix);
+                    template.push_str(&format!("{{{name}}}"));
+                    if let Some(field) = fields.get(index) {
+                        template.push_str(field);
+                    }
+                    arguments.push_str(&format!(", {name} = crate::__cranpose_dev::values::format_text(crate::__cranpose_dev::literal({file_key:?}, {:?}, {}, {:?}), {index})", self.schema, literal.id, literal.value));
+                }
+                // Preserve source line numbers even for multiline raw literals.
+                replacements.push((
+                    literal.range.start,
+                    literal.range.end,
+                    2,
+                    format!(
+                        "{template:?}{}",
+                        "\n".repeat(
+                            source[literal.range.start..literal.range.end]
+                                .bytes()
+                                .filter(|b| *b == b'\n')
+                                .count()
+                        )
+                    ),
+                ));
+                if format.trailing_comma {
+                    arguments.remove(0);
+                }
+                insertions.push((format.end, 0, arguments));
+                continue;
+            }
             insertions.push((
                 literal.range.start,
                 2,
@@ -166,10 +247,15 @@ impl Catalog {
             insertions.push((call.end, 0, " }".into()));
         }
         // Descending insertion preserves the original line numbers and source.
-        insertions.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        replacements.extend(
+            insertions
+                .into_iter()
+                .map(|(start, rank, text)| (start, start, rank, text)),
+        );
+        replacements.sort_by(|a, b| b.0.cmp(&a.0).then(b.2.cmp(&a.2)));
         let mut output = source.to_owned();
-        for (offset, _, text) in insertions {
-            output.insert_str(offset, &text);
+        for (start, end, _, text) in replacements {
+            output.replace_range(start..end, &text);
         }
         output
     }
@@ -178,9 +264,11 @@ impl Catalog {
 struct Walk {
     source: SourceIndex,
     active: bool,
+    runtime: bool,
     functions: Vec<Function>,
     calls: Vec<Call>,
     literals: Vec<Literal>,
+    formats: Vec<Format>,
 }
 fn attr(attrs: &[syn::Attribute], name: &str) -> bool {
     attrs
@@ -222,6 +310,8 @@ impl Walk {
 impl VisitMut for Walk {
     fn visit_item_fn_mut(&mut self, function: &mut syn::ItemFn) {
         let previous = self.active;
+        let previous_runtime = self.runtime;
+        self.runtime = function.sig.constness.is_none();
         self.active = attr(&function.attrs, "composable") && function.sig.constness.is_none();
         if self.active {
             self.functions.push(Function {
@@ -229,9 +319,12 @@ impl VisitMut for Walk {
                 range: self.source.range(function.sig.ident.span()),
                 preview: function.sig.inputs.is_empty() && function.sig.generics.params.is_empty(),
             });
+        }
+        if self.runtime {
             self.visit_block_mut(&mut function.block);
         }
         self.active = previous;
+        self.runtime = previous_runtime;
     }
     fn visit_item_const_mut(&mut self, _: &mut syn::ItemConst) {}
     fn visit_item_static_mut(&mut self, _: &mut syn::ItemStatic) {}
@@ -276,6 +369,57 @@ impl VisitMut for Walk {
         visit_mut::visit_expr_call_mut(self, call);
     }
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+        if self.runtime
+            && let syn::Expr::Call(call) = expr
+            && let syn::Expr::Path(path) = &*call.func
+            && (path
+                .path
+                .segments
+                .last()
+                .is_some_and(|s| s.ident == "Color")
+                || (path.path.segments.last().is_some_and(|s| s.ident == "rgba")
+                    && path
+                        .path
+                        .segments
+                        .iter()
+                        .rev()
+                        .nth(1)
+                        .is_some_and(|s| s.ident == "Color")))
+            && call.args.len() == 4
+        {
+            let values = call
+                .args
+                .iter()
+                .map(|e| self.literal(e))
+                .collect::<Option<Vec<_>>>();
+            if let Some(values) = values
+                && values.iter().all(|v| v.kind == "float")
+            {
+                let value = values
+                    .iter()
+                    .map(|v| v.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if runtime::color_channels(&value).is_some() {
+                    let id = self.literals.len();
+                    let suffix = values
+                        .iter()
+                        .map(|v| v.suffix.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let constructor = path.to_token_stream().to_string();
+                    self.literals.push(Literal {
+                        id,
+                        kind: "color".into(),
+                        value,
+                        suffix: suffix.clone(),
+                        range: self.source.range(expr.span()),
+                    });
+                    *expr = syn::parse_quote!(__cranpose_color_slot!(#id, #constructor, #suffix));
+                    return;
+                }
+            }
+        }
         if self.active
             && let Some(literal) = self.literal(expr)
         {
@@ -289,6 +433,57 @@ impl VisitMut for Walk {
         } else {
             visit_mut::visit_expr_mut(self, expr);
         }
+    }
+    fn visit_expr_macro_mut(&mut self, expr: &mut syn::ExprMacro) {
+        use syn::{Token, parse::Parser, punctuated::Punctuated};
+        let path = expr.mac.path.to_token_stream().to_string().replace(' ', "");
+        if !self.active || !matches!(path.as_str(), "format" | "std::format" | "alloc::format") {
+            return;
+        }
+        let parser = Punctuated::<syn::Expr, Token![,]>::parse_terminated;
+        let Ok(mut args) = parser.parse2(expr.mac.tokens.clone()) else {
+            return;
+        };
+        let trailing_comma = args.trailing_punct();
+        let Some(syn::Expr::Lit(first)) = args.first_mut() else {
+            return;
+        };
+        let syn::Lit::Str(text) = &first.lit else {
+            return;
+        };
+        let Some((_, fields)) = runtime::format_parts(&text.value()) else {
+            return;
+        };
+        if text.value().len() > MAX_STRING_BYTES || fields.len() > 64 {
+            return;
+        }
+        let id = self.literals.len();
+        self.literals.push(Literal {
+            id,
+            kind: "string".into(),
+            value: text.value(),
+            suffix: String::new(),
+            range: self.source.range(text.span()),
+        });
+        let mut prefix = format!("__cranpose_text_{id}_");
+        let tokens = expr.mac.tokens.to_string();
+        while tokens.contains(&prefix) {
+            prefix.push('_');
+        }
+        self.formats.push(Format {
+            literal: id,
+            end: self
+                .source
+                .offsets(expr.mac.delimiter.span().close().start())
+                .0,
+            prefix,
+            trailing_comma,
+        });
+        first.lit = syn::Lit::Str(syn::LitStr::new(&format!("{id}:{fields:?}"), text.span()));
+        for argument in args.iter_mut().skip(1) {
+            self.visit_expr_mut(argument);
+        }
+        expr.mac.tokens = args.to_token_stream();
     }
 }
 
@@ -370,7 +565,7 @@ mod tests {
                 .iter()
                 .map(|v| v.value.as_str())
                 .collect::<Vec<_>>(),
-            ["1", "3", "yes", "no"]
+            ["1", "{}", "1", "3", "yes", "no"]
         );
         let instrumented = catalog.instrument(source, "src/main.rs");
         syn::parse_file(&instrumented).expect("instrumented Rust");

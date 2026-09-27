@@ -32,6 +32,26 @@ pub struct State {
     overlay_id: Option<u32>,
     pub overlay_ready: bool,
     watched: Option<(O, O, i64)>,
+    arrival: Option<Arrival>,
+}
+struct Arrival {
+    path: String,
+    line: i32,
+    request: u64,
+    created: std::time::Instant,
+    shown: Option<std::time::Instant>,
+}
+pub fn source_arrival(project: &Project, path: &str, line: i32) {
+    static REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mut state = project.authoring.lock().expect("authoring");
+    state.arrival = Some(Arrival {
+        path: path.into(),
+        line,
+        request: REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        created: std::time::Instant::now(),
+        shown: None,
+    });
+    state.geometry.clear();
 }
 pub fn invalidate(project: &Project) {
     project
@@ -69,6 +89,17 @@ pub fn install(project: &Arc<Project>, j: &mut J<'_>, multicaster: &O) -> Result
 
 pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
     crate::wizard::tick(project, j)?;
+    {
+        let mut state = project.authoring.lock().expect("authoring");
+        if state.arrival.as_ref().is_some_and(|a| {
+            a.created.elapsed() > std::time::Duration::from_secs(5)
+                || a.shown
+                    .is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(900))
+        }) {
+            state.arrival = None;
+            state.geometry.clear();
+        }
+    }
     let popup = project
         .authoring
         .lock()
@@ -506,7 +537,7 @@ fn geometry(project: &Arc<Project>, j: &mut J<'_>, editor: &O, stamp: i64) -> Re
         && parsed
             .catalog
             .as_ref()
-            .is_none_or(|c| c.functions.is_empty())
+            .is_none_or(|c| c.functions.is_empty() && c.literals.is_empty())
     {
         return Ok(());
     }
@@ -523,7 +554,9 @@ fn geometry(project: &Arc<Project>, j: &mut J<'_>, editor: &O, stamp: i64) -> Re
             if top + height < 0 || top > h {
                 continue;
             }
-            items.push(json!({"kind":"value","x":j.field_int(&rect,"x")?-x,"y":top,"width":14,"height":height,"label":"◆","id":id}));
+            let literal = parsed.catalog.as_ref().and_then(|c| c.literals.get(id));
+            let color = literal.filter(|v| v.kind == "color");
+            items.push(json!({"kind":if color.is_some(){"color"}else{"value"},"value":color.map(|v|&v.value),"x":j.field_int(&rect,"x")?-x,"y":top,"width":14,"height":height,"label":"◆","id":id}));
         }
     }
     let folding = j.obj(
@@ -569,9 +602,47 @@ fn geometry(project: &Arc<Project>, j: &mut J<'_>, editor: &O, stamp: i64) -> Re
             break;
         }
     }
+    let mut arrival = None;
+    if state.overlay_ready
+        && let Some(Arrival {
+            path,
+            line,
+            request,
+            created,
+            ..
+        }) = &state.arrival
+        && path == &parsed.path
+        && created.elapsed() < std::time::Duration::from_secs(5)
+    {
+        let document = j.obj(
+            editor,
+            "getDocument",
+            "()Lcom/intellij/openapi/editor/Document;",
+            &[],
+        )?;
+        let line = (*line).clamp(0, j.int(&document, "getLineCount")?.saturating_sub(1));
+        let offset = j
+            .call(&document, "getLineStartOffset", "(I)I", &[A::I(line)])?
+            .i()?;
+        let point = j.obj(editor, "offsetToXY", "(I)Ljava/awt/Point;", &[A::I(offset)])?;
+        let top = j.field_int(&point, "y")? - y;
+        if top + height >= 0 && top < h {
+            arrival = Some(
+                json!({"kind":"arrival","request":request,"x":0,"y":top,"width":w,"height":height}),
+            );
+        }
+    }
+    if arrival.is_some()
+        && let Some(a) = &mut state.arrival
+    {
+        a.shown.get_or_insert_with(std::time::Instant::now);
+    }
     state.geometry = key;
     drop(state);
     let mut badges = crate::stability::decorations(project, j, editor, x, y, h)?;
+    if let Some(arrival) = arrival {
+        badges.insert(0, arrival);
+    }
     badges.extend(items);
     let items = badges.into_iter().take(256).collect::<Vec<_>>();
     let panel = ensure_panel(project, j)?;
@@ -676,6 +747,15 @@ fn open_control(
         .get(id)
         .ok_or_else(|| anyhow::anyhow!("Live value disappeared"))?
         .clone();
+    let (width, height) = match literal.kind.as_str() {
+        "color" => (400, 490),
+        "int" | "float" => (400, 380),
+        _ => (340, 240),
+    };
+    let control_group = format!(
+        "cranpose-control-{}",
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    );
     let mut options = project::options(j, false)?;
     options
         .environment
@@ -691,6 +771,7 @@ fn open_control(
         }));
     let weak = Arc::downgrade(project);
     let expected = Arc::new(std::sync::Mutex::new((catalog, source)));
+    let pending = Arc::new(std::sync::Mutex::new(None::<String>));
     *panel.on_message.lock().expect("message") = Some(Arc::new(
         move |j, panel, channel, payload| {
             if channel != "ide.authoring.edit" {
@@ -699,19 +780,34 @@ fn open_control(
             let Some(project) = weak.upgrade() else {
                 return Ok(());
             };
-            let payload = payload.to_owned();
+            if pending
+                .lock()
+                .expect("pending edit")
+                .replace(payload.to_owned())
+                .is_some()
+            {
+                return Ok(());
+            }
+            let pending = pending.clone();
             let panel = panel.clone();
             let document = document.clone();
             let expected = expected.clone();
+            let control_group = control_group.clone();
             jvm::later(j, move |j| {
                 if project.closed.load(std::sync::atomic::Ordering::Acquire) {
                     return Ok(());
                 }
+                let Some(payload) = pending.lock().expect("pending edit").take() else {
+                    return Ok(());
+                };
                 let result = (|| -> Result<()> {
                     let request: Value = serde_json::from_str(&payload)?;
                     let value = request["value"]
                         .as_str()
                         .ok_or_else(|| anyhow::anyhow!("Missing value"))?;
+                    let group = request["gesture"]
+                        .as_u64()
+                        .map(|g| format!("{control_group}-{g}"));
                     let mut expected = expected.lock().expect("control");
                     let current = j.text(&document, "getText")?;
                     ensure!(
@@ -739,7 +835,7 @@ fn open_control(
                     });
                     let callback = jvm::callback(j, callback_id)?;
                     let files = j.array("com/intellij/psi/PsiFile", &[])?;
-                    let result=j.static_void("com/intellij/openapi/command/WriteCommandAction","runWriteCommandAction","(Lcom/intellij/openapi/project/Project;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Runnable;[Lcom/intellij/psi/PsiFile;)V",&[A::O(&project.object),A::S("Tune Cranpose value"),A::Null,A::O(&callback),A::O(&files)]);
+                    let result=j.static_void("com/intellij/openapi/command/WriteCommandAction","runWriteCommandAction","(Lcom/intellij/openapi/project/Project;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Runnable;[Lcom/intellij/psi/PsiFile;)V",&[A::O(&project.object),A::S("Tune Cranpose value"),group.as_deref().map_or(A::Null,A::S),A::O(&callback),A::O(&files)]);
                     jvm::unregister(callback_id);
                     result?;
                     *expected = (next_catalog, next);
@@ -757,7 +853,7 @@ fn open_control(
             })
         },
     ));
-    let size = j.new("java/awt/Dimension", "(II)V", &[A::I(340), A::I(240)])?;
+    let size = j.new("java/awt/Dimension", "(II)V", &[A::I(width), A::I(height)])?;
     j.void(
         panel.primary.component(),
         "setPreferredSize",
@@ -808,7 +904,7 @@ fn open_control(
 
 #[cfg(feature = "ide-tests")]
 pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
-    let source = "// 🦀\n#[composable]\nfn Card() { Text(\"Café 🦀\"); Space(12); }";
+    let source = "// 🦀\n#[composable]\nfn Card() { Text(\"Café 🦀\"); Space(12); }\nfn palette(){ Color(0.1,0.2,0.3,1.0); }";
     let factory = j.static_obj(
         "com/intellij/openapi/editor/EditorFactory",
         "getInstance",
@@ -834,13 +930,13 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             .map(|p| (p.object.clone(), p.literal))
             .collect::<Vec<_>>();
         ensure!(
-            items.len() == 3,
-            "Expected one preview marker and two live-value glyphs"
+            items.len() == 4,
+            "Expected one preview marker, two scalar glyphs and one grouped color glyph"
         );
         let mut retired = Vec::new();
         for (object, literal) in items {
             if let Some(id) = literal {
-                let token = ["\"Café 🦀\"", "12"][id];
+                let token = ["\"Café 🦀\"", "12", "Color(0.1,0.2,0.3,1.0)"][id];
                 let byte_end = source.find(token).expect("fixture token") + token.len();
                 ensure!(
                     j.int(&object, "getOffset")? as usize
