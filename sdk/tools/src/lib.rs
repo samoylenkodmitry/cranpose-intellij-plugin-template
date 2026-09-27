@@ -7,6 +7,7 @@ mod inspection_profile;
 mod package;
 mod process_metrics;
 mod release;
+mod starter_smoke;
 mod ui_probe;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -44,6 +45,8 @@ enum Task {
     InspectionProfile(inspection_profile::Options),
     /// Verify native editor shader decorations and settled idle rendering.
     AuthoringSmoke(authoring_smoke::Options),
+    /// Create the bundled Showcase with no external tools or network access.
+    StarterSmoke(starter_smoke::Options),
     BridgeTest {
         java: Option<PathBuf>,
         #[arg(long)]
@@ -72,6 +75,7 @@ pub fn run_cli(config: BuildConfig) -> Result<()> {
         Task::HotSmoke(options) => hot_smoke::run(options),
         Task::InspectionProfile(options) => inspection_profile::run(options),
         Task::AuthoringSmoke(options) => authoring_smoke::run(options),
+        Task::StarterSmoke(options) => starter_smoke::run(options),
         Task::BridgeTest { java, ide } => bridge_test(java, ide),
         Task::Package {
             native_dir,

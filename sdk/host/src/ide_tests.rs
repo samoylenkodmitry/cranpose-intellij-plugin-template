@@ -400,5 +400,5 @@ fn authoring(j: &mut J<'_>) -> Result<()> {
     let p = project(j)?;
     crate::authoring::integration_test(&p, j)?;
     crate::authoring::placement_test(&p, j)?;
-    crate::wizard::integration_test(j)
+    crate::wizard::integration_test(&p, j)
 }
