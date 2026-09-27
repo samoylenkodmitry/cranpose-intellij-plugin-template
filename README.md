@@ -201,3 +201,8 @@ scrolled, expansion and return to the first row. The node budget checks that a
 large inspector composes a bounded UI. Timings include JSON transport and the
 UI inspector acknowledgement (polled every 20 ms); they are not frame times.
 Initial and changed-layout CPU samples cover the Studio UI process only.
+
+Use `--change-seconds 20` to sample CPU while changing every node label every
+500 ms. This interval sends no UI-inspection requests; the last changed label is
+verified afterward. This separates normal update work from the acknowledgement
+cost included in the per-round latency measurements.

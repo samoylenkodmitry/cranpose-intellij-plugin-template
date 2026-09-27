@@ -33,6 +33,9 @@ pub struct Options {
     /// Measure content changes through the real UI and verify the resulting labels.
     #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=50))]
     change_rounds: u32,
+    /// Stream changed layouts without requesting UI snapshots during the CPU sample.
+    #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=120))]
+    change_seconds: u32,
     /// Exercise end-of-list scrolling, collapse at the end and expansion.
     #[arg(long)]
     exercise_tree: bool,
@@ -173,6 +176,40 @@ pub fn run(options: Options) -> Result<()> {
         changes.push(json!({"round":round,"latencyMs":latency_ms,"cpuSeconds":cpu_seconds,
             "uiNodes":view["nodes"].as_array().map(Vec::len),"uiSnapshotTruncated":view["truncated"]}));
     }
+    let changed_workload = if options.change_seconds > 0 {
+        phase(&host, &nodes, &mut request, 1)?;
+        let cpu_before = crate::process_metrics::sample(&[child.id()])?[0];
+        let frames_before = host.frames.load(Ordering::Relaxed);
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(u64::from(options.change_seconds));
+        let mut next = started;
+        let mut updates = 0;
+        while Instant::now() < deadline {
+            if Instant::now() >= next {
+                updates += 1;
+                for (index, node) in nodes.iter_mut().enumerate() {
+                    node["text"] = json!(format!("Stream {updates} item {index}"));
+                }
+                request += 1;
+                snapshot(&host, &nodes, request)?;
+                next += Duration::from_millis(500);
+            }
+            drain(&host)?;
+            thread::sleep(Duration::from_millis(10));
+        }
+        let elapsed = started.elapsed().as_secs_f64();
+        let cpu = crate::process_metrics::sample(&[child.id()])?[0] - cpu_before;
+        let frames = host.frames.load(Ordering::Relaxed) - frames_before;
+        ensure!(frames > 0, "Changed layout stream did not render");
+        // Verify only after sampling: inspection acknowledgements are outside the CPU interval.
+        verify_text(&host, &format!("Text · Stream {updates} item 0"))?;
+        Some(
+            json!({"elapsedSeconds":elapsed,"cpuSeconds":cpu,"cpuPercentOfOneCore":cpu/elapsed*100.0,
+            "updates":updates,"frames":frames,"lastUpdateVerified":true}),
+        )
+    } else {
+        None
+    };
     let tree_checks = if options.exercise_tree {
         ensure!(
             options.nodes >= 100,
@@ -192,7 +229,7 @@ pub fn run(options: Options) -> Result<()> {
         "snapshotIntervalMs":500,"settleSeconds":options.settle_seconds,
         "initialLayout":{"latencyMs":initial_ms,"cpuSeconds":initial_cpu_seconds,
             "uiNodes":initial_view["nodes"].as_array().map(Vec::len),"uiSnapshotTruncated":initial_view["truncated"]},
-        "changedLayouts":changes,"treeChecks":tree_checks});
+        "changedLayouts":changes,"changedWorkload":changed_workload,"treeChecks":tree_checks});
     fs::write(&options.report, serde_json::to_vec_pretty(&result)?)?;
     println!("{result}");
     Ok(())
