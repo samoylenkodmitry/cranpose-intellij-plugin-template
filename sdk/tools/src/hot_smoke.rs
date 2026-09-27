@@ -198,6 +198,7 @@ impl Host {
         let request_id = self.next_request;
         let deadline = Instant::now() + Duration::from_secs(seconds);
         let mut next = Instant::now();
+        let mut last_text = Vec::<String>::new();
         while Instant::now() < deadline {
             if Instant::now() >= next {
                 self.send(Packet::message(
@@ -218,6 +219,12 @@ impl Host {
                         && payload["requestId"] == request_id
                     {
                         let nodes = payload["nodes"].as_array().context("Inspector nodes")?;
+                        last_text = nodes
+                            .iter()
+                            .filter_map(|n| n["text"].as_str())
+                            .take(16)
+                            .map(|text| text.chars().take(160).collect())
+                            .collect();
                         // A recomposed layout may reach the host before the runtime's
                         // acknowledgement. Wait for both instead of assuming channel order.
                         let acknowledged = after_generation.is_none_or(|previous| {
@@ -239,7 +246,8 @@ impl Host {
             }
         }
         bail!(
-            "Preview never displayed {expected:?}; {} frames",
+            "Preview never displayed {expected:?}; last text {last_text:?}; runtime {}; {} frames",
+            self.runtime,
             self.frames.load(Ordering::Relaxed)
         )
     }
