@@ -399,5 +399,6 @@ fn reconnect(j: &mut J<'_>) -> Result<()> {
 fn authoring(j: &mut J<'_>) -> Result<()> {
     let p = project(j)?;
     crate::authoring::integration_test(&p, j)?;
+    crate::authoring::placement_test(&p, j)?;
     crate::wizard::integration_test(j)
 }

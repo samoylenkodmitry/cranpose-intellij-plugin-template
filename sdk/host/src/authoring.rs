@@ -1,5 +1,7 @@
 //! Document-based preview markers and native Cranpose value controls.
 //! Parsing runs off the EDT; unchanged documents and viewports do no work.
+#[cfg(feature = "ide-tests")]
+mod placement_test;
 use crate::{
     editor,
     jvm::{self, A, J, O},
@@ -12,6 +14,8 @@ use cranpose_plugin_authoring::{
     Catalog,
     runtime::{Update, Value as LiveValue},
 };
+#[cfg(feature = "ide-tests")]
+pub use placement_test::integration_test as placement_test;
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -196,10 +200,9 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
     if let Some(result) = result {
         project.authoring.lock().expect("authoring").receiver = None;
         if result.path == path && result.stamp == stamp {
-            clear_placed(project, j)?;
             if let Some(catalog) = &result.catalog {
                 crate::feedback::parsed(project, &path, stamp, catalog);
-                place(project, j, &editor, &path, catalog)?;
+                refresh_placed(project, j, &editor, &path, catalog)?;
                 if !catalog.literals.is_empty() {
                     ensure_control(project, j)?;
                 }
@@ -230,6 +233,8 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                 {
                     workspace.live_values(&payload);
                 }
+            } else {
+                clear_placed(project, j)?;
             }
             let mut state = project.authoring.lock().expect("authoring");
             state.current = Some(result);
@@ -416,6 +421,76 @@ pub fn dispose(project: &Project, j: &mut J<'_>) -> Result<()> {
         panel.close(j)?;
     }
     Ok(())
+}
+
+// Inline anchors already follow document edits. Retain their native callbacks
+// only while the source structure, literal identities and actual IDE offsets
+// still agree. Rebuild on structural edits, invalidated anchors or caret-driven
+// anchor movement. The shader geometry is refreshed from the new catalog either
+// way, so retained color glyphs show the current value.
+fn refresh_placed(
+    project: &Arc<Project>,
+    j: &mut J<'_>,
+    editor: &O,
+    path: &str,
+    catalog: &Catalog,
+) -> Result<()> {
+    if reusable_placed(project, j, path, catalog)? {
+        return Ok(());
+    }
+    clear_placed(project, j)?;
+    place(project, j, editor, path, catalog)
+}
+
+fn reusable_placed(
+    project: &Project,
+    j: &mut J<'_>,
+    path: &str,
+    catalog: &Catalog,
+) -> Result<bool> {
+    let state = project.authoring.lock().expect("authoring");
+    let Some(previous) = state
+        .current
+        .as_ref()
+        .filter(|p| p.path == path)
+        .and_then(|p| p.catalog.as_ref())
+    else {
+        return Ok(false);
+    };
+    if previous.schema != catalog.schema {
+        return Ok(false);
+    }
+    let previews = |c: &Catalog| c.functions.iter().filter(|f| f.preview).count();
+    let expected =
+        previews(catalog) + (catalog.literals.len() + catalog.references.len()).min(1024);
+    if state.placed.len() != expected || previews(previous) != previews(catalog) {
+        return Ok(false);
+    }
+    let mut targets = catalog
+        .literals
+        .iter()
+        .map(|l| (l.id, l.range.end_utf16))
+        .chain(
+            catalog
+                .references
+                .iter()
+                .map(|r| (r.literal, r.range.end_utf16)),
+        )
+        .take(1024);
+    for item in &state.placed {
+        if !j.bool(&item.object, "isValid")? {
+            return Ok(false);
+        }
+        if let Some(id) = item.literal {
+            let Some((literal, offset)) = targets.next() else {
+                return Ok(false);
+            };
+            if id != literal || j.int(&item.object, "getOffset")? as usize != offset {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(targets.next().is_none())
 }
 
 fn place(
