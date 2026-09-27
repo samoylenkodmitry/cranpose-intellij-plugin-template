@@ -7,7 +7,7 @@ use std::{
     process::Command,
     time::{Duration, Instant},
 };
-pub fn run(ide: &Path) -> Result<()> {
+pub fn run(ide: &Path, profile: bool) -> Result<()> {
     let ide = ide.canonicalize()?;
     let home = if ide.join("Contents").is_dir() {
         ide.join("Contents")
@@ -42,14 +42,19 @@ pub fn run(ide: &Path) -> Result<()> {
         &crate::release::version()?,
         false,
     )?;
-    crate::run(Command::new("cargo").current_dir(crate::root()).args([
+    let mut build = Command::new("cargo");
+    build.current_dir(crate::root()).args([
         "build",
         "--locked",
         "-p",
         &crate::config().host_package,
         "--features",
         "ide-tests",
-    ]))?;
+    ]);
+    if profile {
+        build.arg("--release");
+    }
+    crate::run(&mut build)?;
     let lib = run
         .join("plugins")
         .join(&crate::config().directory)
@@ -57,7 +62,9 @@ pub fn run(ide: &Path) -> Result<()> {
     let library = crate::package::library(&crate::package::host_platform());
     for arch in crate::package::arch_aliases(std::env::consts::ARCH) {
         fs::copy(
-            crate::target_dir().join("debug").join(library),
+            crate::target_dir()
+                .join(if profile { "release" } else { "debug" })
+                .join(library),
             lib.join("native").join(arch).join(library),
         )?;
     }
@@ -124,7 +131,6 @@ pub fn run(ide: &Path) -> Result<()> {
         .map(|p| home.join("lib").join(p));
     command.args([
         "-Xmx2g",
-        "-Xcheck:jni",
         "-Xverify:all",
         "-Djava.awt.headless=true",
         "-Didea.is.internal=true",
@@ -133,6 +139,9 @@ pub fn run(ide: &Path) -> Result<()> {
         "-Dide.show.tips.on.startup.default.value=false",
         "-Dsplash=false",
     ]);
+    if !profile {
+        command.arg("-Xcheck:jni");
+    }
     command.arg(format!(
         "-Didea.required.plugins.id={}",
         crate::config().plugin_id

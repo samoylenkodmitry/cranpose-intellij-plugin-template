@@ -31,6 +31,10 @@ enum Task {
     IdeTest {
         #[arg(long)]
         ide: PathBuf,
+        /// Use an optimized host without JNI checking for timing experiments.
+        /// The default suite retains its checked debug host.
+        #[arg(long)]
+        profile: bool,
     },
 
     #[command(subcommand)]
@@ -63,7 +67,7 @@ pub fn run_cli(config: BuildConfig) -> Result<()> {
     match Cli::parse().command {
         Task::UseFrameworkMain => use_framework_main(),
         Task::FetchIde { product, version } => release::fetch_ide(&product, &version),
-        Task::IdeTest { ide } => ide_test::run(&ide),
+        Task::IdeTest { ide, profile } => ide_test::run(&ide, profile),
         Task::Release(task) => release::run(task),
         Task::HotSmoke(options) => hot_smoke::run(options),
         Task::InspectionProfile(options) => inspection_profile::run(options),
