@@ -34,6 +34,9 @@ suite checks Swing source/preview coordinate conversion and pointer passthrough.
 `authoring-smoke` verifies pixels at both ends, animation, final transparency and
 zero settled frames at 1× and 2×. Its report includes transient native CPU time;
 PNG capture and host/IDE costs are outside that CPU sample.
+It records first painted and final transparent frame receipt separately. Cold
+software GPU delivery has a ten-second ceiling; once visible, the effect must
+settle within three seconds. These are test timeouts, not latency promises.
 
 For an actual IDE trace, add `-Dcranpose.trace.edits=true` to the sandbox's VM
 options and restart it. Successful matches log `CRANPOSE_EDIT_PRESENTED` with

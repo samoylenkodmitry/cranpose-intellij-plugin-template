@@ -199,7 +199,11 @@ pub fn run(options: Options) -> Result<()> {
         let mut target_pixels = 0;
         let mut capture = crate::ui_probe::FrameCapture::default();
         let mut evidence = None;
-        while started.elapsed() < Duration::from_millis(1500) {
+        let mut first_paint = None;
+        let mut transparent = None;
+        // Software GPU pipeline creation is part of cold delivery, not of the
+        // 850 ms animation clock. Bound both total delivery and visible settling.
+        while started.elapsed() < Duration::from_secs(10) {
             if let Ok(event) = receive.recv_timeout(Duration::from_millis(50))
                 && let Event::Frame(mut frame) = event?
                 && frame.surface == lightning_surface
@@ -209,21 +213,40 @@ pub fn run(options: Options) -> Result<()> {
                 capture.update(&frame);
                 let (painted, impact) =
                     capture.alpha_counts(30, [516 * scale, 166 * scale, 616 * scale, 198 * scale]);
+                if painted > 500 {
+                    first_paint.get_or_insert_with(|| started.elapsed());
+                }
+                if first_paint.is_some() && capture.alpha_counts(0, [0; 4]).0 == 0 {
+                    transparent = Some(started.elapsed());
+                }
                 target_pixels = target_pixels.max(impact);
                 if painted > brightest {
                     brightest = painted;
                     evidence = Some(capture.clone());
                 }
             }
+            if transparent.is_some() && started.elapsed() >= Duration::from_millis(1500) {
+                break;
+            }
+            if first_paint.is_some_and(|first| started.elapsed() - first > Duration::from_secs(3)) {
+                break;
+            }
         }
+        eprintln!(
+            "Lightning {scale}x: first paint={first_paint:?}, transparent={transparent:?}, received frames={frames}, observation={:?}",
+            started.elapsed()
+        );
         ensure!(
             frames >= 3 && brightest > 500 && target_pixels > 100,
             "Lightning must animate across source and target at {scale}x: frames={frames} painted={brightest} target={target_pixels}"
         );
         let alpha_left = capture.alpha_counts(0, [0; 4]).0 > 0;
-        ensure!(!alpha_left, "Lightning must finish transparent at {scale}x");
+        ensure!(
+            transparent.is_some() && !alpha_left,
+            "Lightning must finish transparent at {scale}x"
+        );
         let animation_cpu = crate::process_metrics::sample(&[child.id()])?[0] - animation_cpu;
-        lightning.push(json!({"scale":scale,"frames":frames,"paintedPixels":brightest,"impactPixels":target_pixels,"finishedTransparent":true,"cpuSeconds":animation_cpu,"observationSeconds":started.elapsed().as_secs_f64()}));
+        lightning.push(json!({"scale":scale,"frames":frames,"paintedPixels":brightest,"impactPixels":target_pixels,"finishedTransparent":true,"firstPaintMs":first_paint.map(|t|t.as_secs_f64()*1000.0),"transparentMs":transparent.map(|t|t.as_secs_f64()*1000.0),"cpuSeconds":animation_cpu,"observationSeconds":started.elapsed().as_secs_f64()}));
         // PNG encoding must not hold up the frame receiver or its acknowledgments.
         evidence.context("Lightning evidence")?.save(
             &options
