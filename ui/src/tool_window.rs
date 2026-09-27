@@ -87,7 +87,9 @@ pub fn ToolWindow() {
             });
             Row(
                 Modifier::empty().fill_max_width(),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     let label = if animate.get() { "Pause" } else { "Animate" };
                     Action(palette, label, move || animate.set(!animate.get()));
@@ -148,7 +150,9 @@ fn EffectsCard(
     Card(palette, "SHADER EFFECTS", move || {
         Row(
             Modifier::empty().fill_max_width(),
-            RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+            RowSpec::default()
+                .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                .vertical_alignment(VerticalAlignment::CenterVertically),
             move || {
                 let orb_label = if orb.get() {
                     "Hide the orb"
@@ -168,7 +172,9 @@ fn EffectsCard(
         );
         Row(
             Modifier::empty().fill_max_width(),
-            RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(6.0)),
+            RowSpec::default()
+                .horizontal_arrangement(LinearArrangement::spaced_by(6.0))
+                .vertical_alignment(VerticalAlignment::CenterVertically),
             move || {
                 for choice in EffectStyle::ALL {
                     StyleChip(palette, choice, style);
