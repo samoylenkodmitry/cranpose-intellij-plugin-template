@@ -74,7 +74,7 @@ crates from this repository. There is no dependency back on Studio.
 | `sdk/jvm-bridge` | JVM classfile generation in Rust |
 | `sdk/tools` | Packaging, SDK tests, native verification and release tools |
 | `sdk/ux` | Themes, searchable trees and change-only host message delivery |
-| `sdk/cache` | [Immutable generated assets that preserve build fingerprints](sdk/cache/README.md) |
+| `sdk/cache` | [Generated assets and private dependency caches](sdk/cache/README.md) |
 | `sdk/process` | [Owned process trees, bounded shutdown and cancellation](sdk/process/README.md) |
 | `sdk/watch` | Bounded, deduplicated file-change batches with quiet and maximum deadlines |
 
