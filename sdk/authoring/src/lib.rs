@@ -65,6 +65,10 @@ pub struct Catalog {
     pub formats: Vec<Format>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<Reference>,
+    /// Array iteration can carry several literal origins. These links are for
+    /// rendered feedback only, never an ambiguous floating control target.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feedback_references: Vec<Reference>,
 }
 /// A lexical name that leads to one already-live initializer. Editing this
 /// occurrence edits that initializer; it does not replace the variable use.
@@ -116,7 +120,8 @@ impl Catalog {
             digest.update((line as u64).to_le_bytes());
         }
         let schema = format!("{:x}", digest.finalize());
-        let references = references::resolve(source, &original, &walk.literals);
+        let (references, feedback_references) =
+            references::resolve(source, &original, &walk.literals);
         Ok(Self {
             schema,
             functions: walk.functions,
@@ -124,6 +129,7 @@ impl Catalog {
             literals: walk.literals,
             formats: walk.formats,
             references,
+            feedback_references,
         })
     }
 

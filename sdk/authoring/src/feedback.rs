@@ -1,56 +1,61 @@
-//! Match an edited text slot to its rendered view, without guessing by label alone.
+//! Match edited live slots to rendered views using source provenance.
 use crate::{Catalog, runtime::format_parts};
 use serde::Deserialize;
 
 #[derive(Clone, Debug)]
-pub struct TextTarget {
+pub struct ViewTarget {
     pub lines: Vec<usize>,
+    calls: Vec<(String, usize)>,
     parts: Vec<String>,
     formatted: bool,
+    text: bool,
 }
-impl TextTarget {
-    /// Only text whose initializer is under the edit is eligible. Aliases may
-    /// lead to more than one Text call; an ambiguous rendered match is skipped.
+impl ViewTarget {
+    /// Follow the edited initializer to its component calls. Aliases may lead
+    /// to multiple views; an ambiguous rendered match is skipped.
     pub fn at(catalog: &Catalog, offset_utf16: usize) -> Option<Self> {
         let literal = catalog
             .literals
             .iter()
             .find(|l| l.range.start_utf16 <= offset_utf16 && offset_utf16 < l.range.end_utf16)?;
-        if literal.kind != "string" {
-            return None;
-        }
+        let text = literal.kind == "string";
         let formatted = catalog.formats.iter().any(|f| f.literal == literal.id);
         let parts = if formatted {
             format_parts(&literal.value)?.0
         } else {
             vec![literal.value.clone()]
         };
-        if parts.iter().all(String::is_empty) {
+        if text && parts.iter().all(String::is_empty) {
             return None;
         }
         let mut lines = Vec::new();
+        let mut calls = Vec::new();
         for range in std::iter::once(&literal.range).chain(
             catalog
                 .references
                 .iter()
+                .chain(catalog.feedback_references.iter())
                 .filter(|r| r.literal == literal.id)
                 .map(|r| &r.range),
         ) {
             if let Some(call) = catalog
                 .calls
                 .iter()
-                .filter(|c| c.name == "Text" && c.range.start <= range.start && c.end >= range.end)
+                .filter(|c| c.range.start <= range.start && c.end >= range.end)
                 .min_by_key(|c| c.end - c.range.start)
             {
                 lines.push(call.range.line);
+                calls.push((call.name.clone(), call.range.line));
             }
         }
         lines.sort_unstable();
         lines.dedup();
         (!lines.is_empty()).then_some(Self {
             lines,
+            calls,
             parts,
             formatted,
+            text,
         })
     }
     fn matches(&self, text: &str) -> bool {
@@ -68,7 +73,7 @@ impl TextTarget {
         }
         rest.ends_with(self.parts.last().expect("format parts"))
     }
-    /// Source call identity and the new rendered text must both agree. Never
+    /// Source call identity and, for strings, the new rendered text must agree. Never
     /// point at an old label, duplicate view, truncated tree or invalid bounds.
     pub fn bounds(&self, file: &str, payload: &str, request: u64) -> Option<[f64; 4]> {
         if payload.len() > 8 * 1024 * 1024 {
@@ -80,8 +85,7 @@ impl TextTarget {
         }
         let suffix = format!("/{}", file.replace('\\', "/"));
         let mut matches = snapshot.nodes.into_iter().filter(|node| {
-            node.kind == "Text"
-                && self.matches(&node.text)
+            (!self.text || (node.kind == "Text" && self.matches(&node.text)))
                 && node.sources.iter().any(|s| {
                     let source_file = s.file.replace('\\', "/");
                     let path = if source_file.starts_with('/') || s.manifest_dir.is_empty() {
@@ -89,9 +93,11 @@ impl TextTarget {
                     } else {
                         format!("{}/{}", s.manifest_dir.replace('\\', "/"), source_file)
                     };
-                    s.name == "__cranpose_call:Text"
-                        && self.lines.contains(&s.line)
-                        && (path == file.replace('\\', "/") || path.ends_with(&suffix))
+                    self.calls.iter().any(|(name, line)| {
+                        s.name == format!("__cranpose_call:{name}")
+                            && *line == s.line
+                            && (self.text || node.kind == *name)
+                    }) && (path == file.replace('\\', "/") || path.ends_with(&suffix))
                 })
                 && [node.x, node.y, node.width, node.height]
                     .iter()
@@ -137,8 +143,8 @@ struct Source {
 mod tests {
     use super::*;
     use serde_json::json;
-    fn target(source: &str, token: &str) -> TextTarget {
-        TextTarget::at(
+    fn target(source: &str, token: &str) -> ViewTarget {
+        ViewTarget::at(
             &Catalog::parse(source).expect("catalog"),
             source[..source.find(token).expect("token")]
                 .encode_utf16()
@@ -192,9 +198,9 @@ mod tests {
         assert!(plain.matches("Ready"));
     }
     #[test]
-    fn skips_non_text_changes_and_invalid_snapshots() {
+    fn skips_unmapped_values_and_invalid_snapshots() {
         let c = Catalog::parse("#[composable]\nfn Card(){ Space(12); }").expect("catalog");
-        assert!(TextTarget::at(&c, c.literals[0].range.start_utf16).is_none());
+        assert!(ViewTarget::at(&c, c.literals[0].range.start_utf16).is_some());
         let t = target("#[composable]\nfn Card(){ Text(\"New\"); }", "New");
         let mut s = snapshot("New", 2);
         s["truncated"] = json!(true);
@@ -202,5 +208,60 @@ mod tests {
         s["truncated"] = json!(false);
         s["nodes"][0]["width"] = json!(-1);
         assert!(t.bounds("src/main.rs", &s.to_string(), 9).is_none());
+    }
+    #[test]
+    fn follows_array_iteration_without_creating_ambiguous_controls() {
+        for source in [
+            "#[composable]\nfn Card(){ for label in [\"New\", \"Other\"] { Text(label); } }",
+            "#[composable]\nfn Card(){ let labels = [\"New\", \"Other\"]; for (i, label) in labels.into_iter().enumerate() { Text(label); } }",
+            "#[composable]\nfn Card(){ for (label, width) in [(\"New\", 12), (\"Other\", 24)] { Text(label, width); } }",
+        ] {
+            let c = Catalog::parse(source).expect("catalog");
+            assert!(c.references.iter().all(|r| r.name != "label"));
+            let t = target(source, "New");
+            assert!(
+                t.bounds("src/main.rs", &snapshot("New", 2).to_string(), 9)
+                    .is_some()
+            );
+            assert!(
+                t.bounds("src/main.rs", &snapshot("Other", 2).to_string(), 9)
+                    .is_none()
+            );
+        }
+        let source = "#[composable]\nfn Card(){ for label in [\"New\", \"Other\"] { let label = unknown(); Text(label); } }";
+        let c = Catalog::parse(source).expect("catalog");
+        assert!(
+            ViewTarget::at(&c, c.literals[0].range.start_utf16).is_none(),
+            "Shadowed loop binding"
+        );
+    }
+    #[test]
+    fn resolves_numeric_color_and_boolean_views_and_skips_duplicates() {
+        for (source, token, kind) in [
+            (
+                "#[composable]\nfn Card(){ let gap = 24.0; Column(Modifier::empty().padding(gap), || Text(\"child\")); }",
+                "24.0",
+                "Column",
+            ),
+            (
+                "#[composable]\nfn Card(){ let tint = Color(0.2,0.3,0.4,1.0); Text(\"label\", tint); }",
+                "0.2",
+                "Text",
+            ),
+            (
+                "#[composable]\nfn Card(){ Button(true); }",
+                "true",
+                "Button",
+            ),
+        ] {
+            let t = target(source, token);
+            let mut s = snapshot("label", 2);
+            s["nodes"][0]["kind"] = json!(kind);
+            s["nodes"][0]["sources"][0]["name"] = json!(format!("__cranpose_call:{kind}"));
+            assert!(t.bounds("src/main.rs", &s.to_string(), 9).is_some());
+            let duplicate = s["nodes"][0].clone();
+            s["nodes"].as_array_mut().expect("nodes").push(duplicate);
+            assert!(t.bounds("src/main.rs", &s.to_string(), 9).is_none());
+        }
     }
 }

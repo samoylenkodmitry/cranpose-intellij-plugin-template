@@ -20,6 +20,27 @@ fn jagged(s:f32, seed:f32)->f32 {
 @fragment fn effect_fs(input:VertexOutput)->@location(0) vec4<f32> {
     let p=(input.uv*vec2<f32>(textureDimensions(input_texture))-u[62u].xy)*u[3u].xy/max(u[62u].zw,vec2<f32>(1.0));
     let start=u[0u].xy;
+    let t=u[2u].x;
+    if u[2u].z>0.5 {
+        // A small charging constellation beside the edit. This uses a finite
+        // ten-second animation, so a disconnected host cannot leave an idle loop.
+        let seconds=t*10.0;
+        let d=p-start;
+        let radius=length(d);
+        let angle=atan2(d.y,d.x);
+        let envelope=smoothstep(0.0,0.015,t)*(1.0-smoothstep(0.90,1.0,t));
+        let sweep=pow(0.5+0.5*cos(angle-seconds*5.0),5.0);
+        var energy=exp(-abs(radius-14.0)*1.1)*(0.18+sweep*0.65);
+        energy+=exp(-abs(radius-23.0)*1.6)*(0.5+0.5*sin(angle*3.0+seconds*3.0))*0.22;
+        for(var i=0;i<5;i=i+1){
+            let a=f32(i)*1.25664+seconds*2.8;
+            let at=vec2<f32>(cos(a),sin(a))*(11.0+3.0*sin(seconds*2.0+f32(i)));
+            energy+=exp(-length(d-at)*1.3)*0.65;
+        }
+        let rgb=mix(vec3<f32>(0.22,0.80,1.0),vec3<f32>(0.78,0.48,1.0),0.5+0.5*sin(angle+seconds));
+        let alpha=clamp(energy*envelope,0.0,0.75);
+        return vec4<f32>(rgb*alpha,alpha);
+    }
     let bounds=u[1u];
     let end=vec2<f32>(select(bounds.x,bounds.x+bounds.z,start.x>bounds.x+bounds.z*0.5),bounds.y+bounds.w*0.5);
     let delta=end-start;
@@ -27,7 +48,6 @@ fn jagged(s:f32, seed:f32)->f32 {
     let axis=delta/span;
     let normal=vec2<f32>(-axis.y,axis.x);
     let s=dot(p-start,axis)/span;
-    let t=u[2u].x;
     let seed=u[2u].y;
     let envelope=smoothstep(0.0,0.04,t)*(1.0-smoothstep(0.45,1.0,t));
     let head=min(t*5.0,1.02);
@@ -52,6 +72,15 @@ fn jagged(s:f32, seed:f32)->f32 {
     let ring=exp(-border*0.45)*impact*0.65;
     let spark=exp(-length(p-end)*0.17)*impact;
     energy+=ring+spark;
+    // Arrival releases a soft expanding contour and a handful of sparks.
+    let outward=max(t-0.18,0.0);
+    let distance=length(max(q,vec2<f32>(0.0)))+min(max(q.x,q.y),0.0);
+    energy+=exp(-abs(distance-outward*34.0)*1.0)*impact*0.36;
+    for(var i=0;i<7;i=i+1){
+        let a=f32(i)*0.8976+seed;
+        let at=end+vec2<f32>(cos(a),sin(a))*outward*70.0;
+        energy+=exp(-length(p-at)*1.3)*impact*0.38;
+    }
     let spectrum=mix(vec3<f32>(0.30,0.80,1.0),vec3<f32>(0.70,0.43,1.0),clamp(s,0.0,1.0));
     let white=clamp(core*reach*envelope+spark,0.0,1.0);
     let rgb=mix(spectrum,vec3<f32>(0.93,0.98,1.0),white);
@@ -60,11 +89,11 @@ fn jagged(s:f32, seed:f32)->f32 {
 }";
 
 #[composable]
-fn Bolt(from: [f32; 2], target: [f32; 4], size: [f32; 2], request: u64) {
+fn Bolt(from: [f32; 2], target: [f32; 4], size: [f32; 2], request: u64, pending: bool) {
     let progress = animate_float_as_state_with_initial(
         0.0,
         1.0,
-        tween(850, Easing::LinearEasing),
+        tween(if pending { 10_000 } else { 850 }, Easing::LinearEasing),
         "live edit lightning",
     );
     static SOURCE: OnceLock<Arc<str>> = OnceLock::new();
@@ -75,7 +104,13 @@ fn Bolt(from: [f32; 2], target: [f32; 4], size: [f32; 2], request: u64) {
     );
     shader.set_float4(0, from[0], from[1], 0.0, 0.0);
     shader.set_float4(4, target[0], target[1], target[2], target[3]);
-    shader.set_float4(8, progress.value(), (request % 1024) as f32, 0.0, 0.0);
+    shader.set_float4(
+        8,
+        progress.value(),
+        (request % 1024) as f32,
+        if pending { 1.0 } else { 0.0 },
+        0.0,
+    );
     shader.set_float4(12, size[0], size[1], 0.0, 0.0);
     UiBox(
         Modifier::empty()
@@ -91,7 +126,7 @@ fn Bolt(from: [f32; 2], target: [f32; 4], size: [f32; 2], request: u64) {
 }
 #[composable]
 pub(crate) fn LiveEditLightning() {
-    let state = rememberMutableStateOf(|| None::<(u64, [f32; 2], [f32; 4], [f32; 2])>);
+    let state = rememberMutableStateOf(|| None::<(u64, [f32; 2], [f32; 4], [f32; 2], bool)>);
     CollectEvents(
         rememberHostMessages("ide.authoring.bolt"),
         (),
@@ -133,12 +168,13 @@ pub(crate) fn LiveEditLightning() {
                 [from[0], from[1]],
                 [target[0], target[1], target[2], target[3]],
                 [size[0], size[1]],
+                value["phase"] == "pending",
             )));
         },
     );
     cranpose::embed::HostOverlay("window", move || {
-        if let Some((request, from, target, size)) = state.get() {
-            cranpose::key(request, move || Bolt(from, target, size, request));
+        if let Some((request, from, target, size, pending)) = state.get() {
+            cranpose::key(request, move || Bolt(from, target, size, request, pending));
         }
     });
 }
