@@ -11,6 +11,31 @@ pub const SHOWCASE_REVISION: &str = "dc439faf9fd019191ccbf1c6fa70f2c523ae1163";
 const SHOWCASE_ARCHIVE: &[u8] = include_bytes!("../assets/showcase.zip");
 const SHOWCASE_SHA256: &str = "6fd9c29bd04d83e1e3b9309809cf279d1d23452e7336d506eedaba1a385bc60e";
 
+/// The bundled starter's desktop entry is known before Cargo (or even Rust) is
+/// installed. Keep this contract tied to the pinned archive in the tests below.
+pub(crate) fn desktop_target(root: &Path) -> crate::model::Target {
+    let path = |relative: &str| {
+        let value = root.join(relative).to_string_lossy().into_owned();
+        if cfg!(windows) {
+            value.replace('\\', "/")
+        } else {
+            value
+        }
+    };
+    let manifest = path("Cargo.toml");
+    crate::model::Target {
+        id: format!("{manifest}::bin::cranpose-showcase"),
+        manifest,
+        source: path("src/main.rs"),
+        package_name: "cranpose-showcase".into(),
+        name: "cranpose-showcase".into(),
+        kind: "bin".into(),
+        features: vec!["desktop".into()],
+        cranpose_dependency: Some("cranpose".into()),
+        label: "cranpose-showcase · desktop".into(),
+    }
+}
+
 pub fn validate_destination(root: &Path) -> Result<()> {
     if !root.exists() {
         return Ok(());
@@ -203,6 +228,31 @@ mod tests {
         fs::create_dir_all(root.join(".idea")).expect("IDE metadata");
         fs::write(root.join(".idea/keep.xml"), "existing").expect("metadata");
         generate(&root, &cache, || false).expect("offline generation");
+        let target = desktop_target(&root);
+        let manifest = fs::read_to_string(&target.manifest).expect("manifest");
+        let manifest = manifest.parse::<toml_edit::DocumentMut>().expect("TOML");
+        assert_eq!(
+            manifest["package"]["name"].as_str(),
+            Some(target.package_name.as_str())
+        );
+        let binary = manifest["bin"]
+            .as_array_of_tables()
+            .expect("binaries")
+            .iter()
+            .find(|bin| bin["name"].as_str() == Some(target.name.as_str()))
+            .expect("desktop bin");
+        assert_eq!(
+            root.join(binary["path"].as_str().expect("entry")),
+            Path::new(&target.source)
+        );
+        let features = binary["required-features"]
+            .as_array()
+            .expect("features")
+            .iter()
+            .map(|v| v.as_str().expect("feature").to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(features, target.features);
+        assert!(manifest["dependencies"].get("cranpose").is_some());
         let mut archive = zip::ZipArchive::new(Cursor::new(SHOWCASE_ARCHIVE)).expect("bundle");
         let prefix = format!("cranpose-showcase-{SHOWCASE_REVISION}/");
         let mut files = 0;

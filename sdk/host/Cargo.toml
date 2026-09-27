@@ -24,6 +24,7 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 ctrlc = { version = "3", features = ["termination"] }
+toml_edit = "0.22"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

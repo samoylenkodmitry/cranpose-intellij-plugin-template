@@ -450,7 +450,7 @@ pub fn ShowcaseCard() {
                 style(c.accent, 12.0),
             );
             Text(
-                "Showcase is included — create your project offline.\nChoose a name and location above. Rust and downloaded dependencies are needed to build and run.",
+                "Showcase is included — create your project offline.\nStudio prepares a desktop run configuration and opens the preview.\nThe first build needs Rust and downloads dependencies.",
                 Modifier::empty().fill_max_width(),
                 style(c.muted, 12.0),
             );
