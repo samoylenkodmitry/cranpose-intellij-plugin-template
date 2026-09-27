@@ -107,7 +107,9 @@ impl NumberRange {
                     .split_once('.')
                     .map_or(0, |(_, fraction)| fraction.len())
             };
-            let places = decimals(self.min).max(decimals(self.step));
+            let places = decimals(self.min)
+                .max(decimals(self.max))
+                .max(decimals(self.step));
             if places <= 17 {
                 let text = format!("{v:.places$}");
                 if text.contains('.') {
@@ -556,6 +558,12 @@ mod tests {
                 .expect("decimal range")
                 .at(0.25, false),
             "0.3"
+        );
+        assert_eq!(
+            NumberRange::parse("0", "0.95", "0.1", false)
+                .expect("non-grid endpoint")
+                .at(1.0, false),
+            "0.95"
         );
         assert_eq!(
             NumberRange::parse(
