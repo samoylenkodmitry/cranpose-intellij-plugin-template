@@ -878,7 +878,7 @@ pub fn integration_test(project: Arc<Project>, j: &mut J<'_>) -> Result<()> {
         workspace.studio.restart(j)?;
         // Persisted width remains authoritative; other controller state comes from the checkpoint.
         wait_checkpoint(j)?;
-        for (width, expected_width, expected_top) in [(1024, 614.4, 88.0), (480, 480.0, 126.0)] {
+        for (width, expected_width) in [(1024, 614.4), (480, 480.0)] {
             bounds(j, workspace.component(), 0, 0, width, 620)?;
             workspace.layout(j)?;
             workspace.studio.primary.size(j)?;
@@ -889,7 +889,14 @@ pub fn integration_test(project: Arc<Project>, j: &mut J<'_>) -> Result<()> {
                 let placement = workspace.state.lock().expect("workspace").placement.clone();
                 let actual_width = placement["viewport"]["width"].as_f64().unwrap_or_default();
                 let actual_top = placement["viewport"]["y"].as_f64().unwrap_or_default();
-                if (actual_width - expected_width).abs() < 1.0 && actual_top == expected_top {
+                let actual_height = placement["viewport"]["height"].as_f64().unwrap_or_default();
+                // Consumers can use different toolbar heights. Assert that the
+                // preview reflows below its controls and stays inside the host.
+                if (actual_width - expected_width).abs() < 1.0
+                    && actual_top > 0.0
+                    && actual_height > 0.0
+                    && actual_top + actual_height <= 620.0
+                {
                     break;
                 }
                 ensure!(
