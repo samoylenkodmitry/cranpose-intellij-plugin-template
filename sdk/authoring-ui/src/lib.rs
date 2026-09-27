@@ -11,6 +11,8 @@ use cranpose_ui_graphics::{
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
+mod design;
+pub use design::{ActionChip, ArrivalAccent};
 
 #[derive(Clone, Copy, PartialEq)]
 struct Colors {
@@ -88,7 +90,44 @@ pub fn EditorDecorations() {
                     cranpose::key(index, move || {
                         let n = |key: &str| item[key].as_f64().unwrap_or_default() as f32;
                         let (x, y, w, h) = (n("x"), n("y"), n("width"), n("height"));
-                        if item["kind"] == "call" {
+                        if item["kind"] == "arrival" {
+                            cranpose::key(
+                                item["request"].as_u64().unwrap_or_default(),
+                                move || {
+                                    ArrivalAccent(
+                                        Modifier::empty()
+                                            .offset(x, y)
+                                            .width(w)
+                                            .height(h)
+                                            .rounded_corners(4.0),
+                                        Color(
+                                            colors.accent.0,
+                                            colors.accent.1,
+                                            colors.accent.2,
+                                            0.28,
+                                        ),
+                                    );
+                                },
+                            );
+                        } else if item["kind"] == "color" {
+                            if let Some(c) = item["value"].as_str().and_then(design::parse_color) {
+                                UiBox(
+                                    Modifier::empty()
+                                        .offset(x + 2.0, y + (h - 10.0) * 0.5)
+                                        .width(10.0)
+                                        .height(10.0)
+                                        .rounded_corners(3.0)
+                                        .background(Color(
+                                            c[0] as f32,
+                                            c[1] as f32,
+                                            c[2] as f32,
+                                            1.0,
+                                        )),
+                                    BoxSpec::default(),
+                                    || {},
+                                );
+                            }
+                        } else if item["kind"] == "call" {
                             let color =
                                 Color(colors.accent.0, colors.accent.1, colors.accent.2, 0.55);
                             UiBox(
@@ -154,36 +193,22 @@ pub fn EditorDecorations() {
 fn submit(text: &str) {
     let _ = send_to_host("ide.authoring.edit", &json!({"value":text}).to_string());
 }
-#[composable]
-fn ControlButton(label: &'static str, colors: Colors, action: impl Fn() + Clone + 'static) {
-    let primary = label == "Apply";
-    UiBox(
-        Modifier::empty()
-            .height(30.0)
-            .padding(1.0)
-            .rounded_corners(6.0)
-            .background(if primary {
-                Color(colors.accent.0, colors.accent.1, colors.accent.2, 0.18)
-            } else {
-                colors.surface
-            })
-            .clickable(move |_| action())
-            .padding(8.0),
-        BoxSpec::default().content_alignment(cranpose::Alignment::CENTER),
-        move || {
-            Text(
-                label,
-                Modifier::empty(),
-                style(if primary { colors.accent } else { colors.text }, 12.0),
-            );
-        },
+fn seek(text: &str, gesture: u64) {
+    let _ = send_to_host(
+        "ide.authoring.edit",
+        &json!({"value":text,"gesture":gesture}).to_string(),
     );
+}
+#[composable]
+fn ControlButton(label: &'static str, _colors: Colors, action: impl Fn() + Clone + 'static) {
+    design::ActionChip(label.into(), label == "Apply", action);
 }
 /// Undoable source edits are performed by the host. The control never writes files.
 #[composable]
 pub fn ValueControl() {
     let colors = rememberColors();
     let kind = rememberMutableStateOf(String::new);
+    let suffix = rememberMutableStateOf(String::new);
     let field = remember(|| TextFieldState::new("")).with(|v| *v);
     let original = rememberMutableStateOf(String::new);
     let message = rememberMutableStateOf(|| "Applies to source · Undo in the editor".to_owned());
@@ -195,9 +220,16 @@ pub fn ValueControl() {
             if let Ok(v) = serde_json::from_str::<Value>(&payload) {
                 let literal = &v["literal"];
                 let text = literal["value"].as_str().unwrap_or_default();
-                field.set_text(text);
+                field.set_text(if literal["kind"] == "color" {
+                    design::parse_color(text)
+                        .map(design::hex)
+                        .unwrap_or_default()
+                } else {
+                    text.into()
+                });
                 original.set(text.into());
                 kind.set(literal["kind"].as_str().unwrap_or_default().into());
+                suffix.set(literal["suffix"].as_str().unwrap_or_default().into());
                 ready.set(true);
             }
         },
@@ -231,7 +263,15 @@ pub fn ValueControl() {
                 Modifier::empty().fill_max_width(),
                 RowSpec::default().horizontal_arrangement(LinearArrangement::SpaceBetween),
                 move || {
-                    Text("◆  Live value", Modifier::empty(), style(colors.text, 15.0));
+                    Text(
+                        if kind.get() == "color" {
+                            "Live color"
+                        } else {
+                            "◆  Live value"
+                        },
+                        Modifier::empty(),
+                        style(colors.text, 15.0),
+                    );
                     Text(kind.get(), Modifier::empty(), style(colors.muted, 11.0));
                 },
             );
@@ -245,6 +285,14 @@ pub fn ValueControl() {
                     .padding(9.0),
                 style(colors.text, 14.0),
             );
+            let current_kind = kind.get();
+            if current_kind == "color" {
+                design::ColorControls(field, colors);
+            } else if matches!(current_kind.as_str(), "int" | "float") {
+                cranpose::key(current_kind.clone(), move || {
+                    design::NumberControls(field, current_kind == "int", suffix.get(), colors)
+                });
+            }
             // Keep editor actions below the field's floating selection menu.
             // Weight absorbs spare height without moving the field or its caret.
             UiBox(
@@ -282,12 +330,26 @@ pub fn ValueControl() {
                     }
                     ControlButton("Apply", colors, move || {
                         if ready.get() {
-                            submit(&field.text());
+                            if kind.get() == "color" {
+                                if let Some(c) = design::parse_color(&field.text()) {
+                                    submit(&design::wire(c));
+                                } else {
+                                    message.set("Enter #RRGGBB or #RRGGBBAA".into());
+                                }
+                            } else {
+                                submit(&field.text());
+                            }
                         }
                     });
                     ControlButton("Reset", colors, move || {
                         let text = original.get();
-                        field.set_text(&text);
+                        field.set_text(if kind.get() == "color" {
+                            design::parse_color(&text)
+                                .map(design::hex)
+                                .unwrap_or_default()
+                        } else {
+                            text.clone()
+                        });
                         submit(&text);
                     });
                 },

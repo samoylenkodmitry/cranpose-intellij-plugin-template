@@ -105,6 +105,7 @@ pub(crate) struct Host {
     runtime: Value,
     applied_at: Option<Instant>,
     next_request: u64,
+    capture: Option<Arc<Mutex<crate::ui_probe::FrameCapture>>>,
 }
 impl Drop for Host {
     fn drop(&mut self) {
@@ -116,7 +117,14 @@ impl Drop for Host {
     }
 }
 impl Host {
-    pub(crate) fn new(mut stream: TcpStream, token: &str) -> Result<Self> {
+    pub(crate) fn new(stream: TcpStream, token: &str) -> Result<Self> {
+        Self::capturing(stream, token, None)
+    }
+    pub(crate) fn capturing(
+        mut stream: TcpStream,
+        token: &str,
+        capture: Option<Arc<Mutex<crate::ui_probe::FrameCapture>>>,
+    ) -> Result<Self> {
         stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         ensure!(
@@ -129,11 +137,15 @@ impl Host {
         let (sender, messages) = mpsc::sync_channel(64);
         let output = writer.clone();
         let count = frames.clone();
+        let captured = capture.clone();
         thread::spawn(move || {
             let result = (|| -> Result<()> {
                 loop {
                     match protocol::read(&mut stream)?.context("Preview connection closed")? {
                         Event::Frame(frame) => {
+                            if let Some(capture) = &capture {
+                                capture.lock().expect("frame capture").update(&frame);
+                            }
                             count.fetch_add(1, Ordering::Relaxed);
                             Packet::new(11)
                                 .int(frame.surface)
@@ -167,6 +179,7 @@ impl Host {
             runtime: Value::Null,
             applied_at: None,
             next_request: 0,
+            capture: captured,
         };
         host.send(
             Packet::new(1)
@@ -266,6 +279,9 @@ struct StartedPreview {
     startup_phases: Value,
 }
 
+fn original_color_fixture(source: &str) -> bool {
+    source.contains("0.125, 0.25, 0.375, 1.0")
+}
 fn launch(options: &Options, workspace: &std::path::Path) -> Result<StartedPreview> {
     let source = workspace.join(&options.source);
     let original = fs::read_to_string(&source)?;
@@ -322,7 +338,9 @@ fn launch(options: &Options, workspace: &std::path::Path) -> Result<StartedPrevi
         thread::sleep(Duration::from_millis(100));
     };
     let connected_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let mut host = Host::new(stream, &token)?;
+    let capture = (options.live_values_rounds > 0 && original_color_fixture(&cleanup.original))
+        .then(|| Arc::new(Mutex::new(crate::ui_probe::FrameCapture::default())));
+    let mut host = Host::capturing(stream, &token, capture)?;
     let snapshot = host.snapshot(&["Count: 0", "Increment"], 30)?;
     let startup_ms = started.elapsed().as_secs_f64() * 1000.0;
     let pids = preview_pids(&cleanup, &host, &options.log)?;
@@ -501,14 +519,43 @@ pub fn run(mut options: Options) -> Result<()> {
         };
         let source = cleanup
             .original
-            .replace("\"Increment\"", &format!("\"{label}\""));
+            .replace("\"Increment\"", &format!("\"{label}\""))
+            .replace("\"Count: {}\"", "\"Live count: {}\"");
+        let source = if round.is_multiple_of(2) {
+            source.replace("0.125, 0.25, 0.375, 1.0", "0.75, 0.5, 0.25, 1.0")
+        } else {
+            source
+        };
+        let old_pixel = host
+            .capture
+            .as_ref()
+            .and_then(|c| c.lock().expect("frame").pixel(2, 2));
         let previous_generation = host.runtime["generation"].as_u64().unwrap_or(0);
         let payload = live_values(&source, &options.source)?;
         let sent = Instant::now();
         host.send(Packet::message("cranpose.dev.values", &payload))?;
-        host.snapshot_after(&["Count: 3", label], 10, Some(previous_generation))?;
+        host.snapshot_after(&["Live count: 3", label], 10, Some(previous_generation))?;
         let observed = Instant::now();
         let applied = host.applied_at.context("Live value acknowledgement")?;
+        let color_frame_ms = if let (Some(capture), Some((before, _))) = (&host.capture, old_pixel)
+        {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some((pixel, at)) = capture.lock().expect("frame").pixel(2, 2)
+                    && pixel != before
+                {
+                    ensure!(at >= sent, "Color frame predates edit");
+                    break Some((at - sent).as_secs_f64() * 1000.0);
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "Live palette edit did not change rendered pixels"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        } else {
+            None
+        };
         ensure!(host.runtime["pid"] == pid, "Live value restarted preview");
         ensure!(
             fs::read_to_string(&cleanup.source)? == cleanup.original,
@@ -516,7 +563,7 @@ pub fn run(mut options: Options) -> Result<()> {
         );
         live_timings.push(
             json!({"round":round,"sendToAppliedMs":(applied-sent).as_secs_f64()*1000.0,
-            "sendToSnapshotMs":(observed-sent).as_secs_f64()*1000.0}),
+            "sendToSnapshotMs":(observed-sent).as_secs_f64()*1000.0,"sendToColorFrameMs":color_frame_ms}),
         );
     }
     if options.live_values_rounds > 0 {
@@ -1069,6 +1116,7 @@ mod tests {
                 messages,
                 frames: Arc::new(AtomicUsize::new(0)),
                 runtime: json!({"generation":0,"pid":42}),
+                capture: None,
                 applied_at: None,
                 next_request: 0,
             };

@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 [dependencies]
+cranpose-plugin-authoring = { path = "../authoring" }
+cranpose-animation = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057" }
 cranpose-plugin-ux = { path = "../ux" }
 cranpose = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057", features = ["embed"] }
 cranpose-core = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057" }

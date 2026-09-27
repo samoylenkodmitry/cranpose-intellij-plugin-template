@@ -124,6 +124,32 @@ pub fn run(options: Options) -> Result<()> {
         painted > 100 && painted < 10_000,
         "Editor decorations must paint small accents on a transparent surface: {painted} pixels"
     );
+    let mut animated_geometry = geometry.clone();
+    animated_geometry["items"]
+        .as_array_mut()
+        .context("items")?
+        .insert(
+            0,
+            json!({"kind":"arrival","request":1,"x":8,"y":72,"width":580,"height":24}),
+        );
+    send(Packet::message(
+        "ide.authoring.geometry",
+        &animated_geometry.to_string(),
+    ))?;
+    let transition = Instant::now();
+    let mut arrival_frames = 0;
+    while transition.elapsed() < Duration::from_secs(1) {
+        if let Ok(event) = receive.recv_timeout(Duration::from_millis(50))
+            && let Event::Frame(frame) = event?
+            && frame.surface == surface
+        {
+            arrival_frames += 1;
+        }
+    }
+    ensure!(
+        arrival_frames >= 3,
+        "Source arrival shader did not animate: {arrival_frames} frames"
+    );
     // Wait for settling, then demand event-driven idle rendering.
     let settle = Instant::now() + Duration::from_secs(2);
     while Instant::now() < settle {
@@ -144,7 +170,7 @@ pub fn run(options: Options) -> Result<()> {
         idle_frames == 0,
         "Settled decorations emitted {idle_frames} frames"
     );
-    let mut report = json!({"result":"passed","paintedPixels":painted,"idleFrames":idle_frames,
+    let mut report = json!({"result":"passed","paintedPixels":painted,"arrivalFrames":arrival_frames,"idleFrames":idle_frames,
         "idleSeconds":start.elapsed().as_secs_f64(),"idleCpuSeconds":cpu});
     let _ = writer
         .lock()

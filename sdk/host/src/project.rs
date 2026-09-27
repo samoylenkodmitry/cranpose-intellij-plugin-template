@@ -895,7 +895,9 @@ pub fn navigate(
             A::I(column.max(0)),
         ],
     )?;
-    j.void(&descriptor, "navigate", "(Z)V", &[A::Z(true)])
+    j.void(&descriptor, "navigate", "(Z)V", &[A::Z(true)])?;
+    crate::authoring::source_arrival(project, path, line);
+    Ok(())
 }
 fn rgb(j: &mut J<'_>, color: &O) -> Result<[i32; 3]> {
     Ok([
