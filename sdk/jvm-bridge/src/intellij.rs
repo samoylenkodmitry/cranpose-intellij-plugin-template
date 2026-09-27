@@ -39,6 +39,8 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
             "com/intellij/openapi/vfs/newvfs/BulkFileListener",
             "com/intellij/openapi/editor/event/CaretListener",
             "com/intellij/openapi/editor/event/VisibleAreaListener",
+            "com/intellij/openapi/editor/InlayModel$Listener",
+            "com/intellij/openapi/editor/ex/FoldingListener",
             "com/intellij/util/Function",
             "java/util/function/Supplier",
             "com/intellij/codeInsight/daemon/GutterIconNavigationHandler",
@@ -67,6 +69,14 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
             ("componentHidden", "(Ljava/awt/event/ComponentEvent;)V"),
             ("hierarchyChanged", "(Ljava/awt/event/HierarchyEvent;)V"),
             ("propertyChange", "(Ljava/beans/PropertyChangeEvent;)V"),
+            ("onAdded", "(Lcom/intellij/openapi/editor/Inlay;)V"),
+            ("onUpdated", "(Lcom/intellij/openapi/editor/Inlay;I)V"),
+            ("onRemoved", "(Lcom/intellij/openapi/editor/Inlay;)V"),
+            (
+                "onBatchModeFinish",
+                "(Lcom/intellij/openapi/editor/Editor;)V",
+            ),
+            ("onFoldProcessingEnd", "()V"),
             ("windowOpened", "(Ljava/awt/event/WindowEvent;)V"),
             ("windowClosing", "(Ljava/awt/event/WindowEvent;)V"),
             ("windowClosed", "(Ljava/awt/event/WindowEvent;)V"),
@@ -140,6 +150,141 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
         &[
             ("paintComponent", "(Ljava/awt/Graphics;)V"),
             ("contains", "(II)Z"),
+        ],
+    );
+    add(
+        "ShowcaseGenerator",
+        "java/lang/Object",
+        &["com/intellij/platform/DirectoryProjectGenerator"],
+        false,
+        &[
+            ("getName", "()Ljava/lang/String;"),
+            ("getDescription", "()Ljava/lang/String;"),
+            ("getLogo", "()Ljavax/swing/Icon;"),
+            (
+                "createPeer",
+                "()Lcom/intellij/platform/ProjectGeneratorPeer;",
+            ),
+            (
+                "validate",
+                "(Ljava/lang/String;)Lcom/intellij/facet/ui/ValidationResult;",
+            ),
+            (
+                "generateProject",
+                "(Lcom/intellij/openapi/project/Project;Lcom/intellij/openapi/vfs/VirtualFile;Ljava/lang/Object;Lcom/intellij/openapi/module/Module;)V",
+            ),
+        ],
+    );
+    add(
+        "ShowcasePeer",
+        "java/lang/Object",
+        &[
+            "com/intellij/platform/ProjectGeneratorPeer",
+            "com/intellij/openapi/Disposable",
+        ],
+        true,
+        &[
+            ("getComponent", "()Ljavax/swing/JComponent;"),
+            (
+                "getComponent",
+                "(Lcom/intellij/openapi/ui/TextFieldWithBrowseButton;Ljava/lang/Runnable;)Ljavax/swing/JComponent;",
+            ),
+            (
+                "buildUI",
+                "(Lcom/intellij/ide/util/projectWizard/SettingsStep;)V",
+            ),
+            ("getSettings", "()Ljava/lang/Object;"),
+            ("validate", "()Lcom/intellij/openapi/ui/ValidationInfo;"),
+            ("isBackgroundJobRunning", "()Z"),
+            ("dispose", "()V"),
+        ],
+    );
+    add(
+        "ShowcaseBuilder",
+        "com/intellij/ide/util/projectWizard/ModuleBuilder",
+        &[],
+        false,
+        &[
+            ("getPresentableName", "()Ljava/lang/String;"),
+            ("getBuilderId", "()Ljava/lang/String;"),
+            ("getGroupName", "()Ljava/lang/String;"),
+            ("getDescription", "()Ljava/lang/String;"),
+            ("getNodeIcon", "()Ljavax/swing/Icon;"),
+            ("getWeight", "()I"),
+            ("isAvailable", "()Z"),
+            (
+                "getModuleType",
+                "()Lcom/intellij/openapi/module/ModuleType;",
+            ),
+            (
+                "modifyProjectTypeStep",
+                "(Lcom/intellij/ide/util/projectWizard/SettingsStep;)Lcom/intellij/ide/util/projectWizard/ModuleWizardStep;",
+            ),
+            (
+                "setupRootModel",
+                "(Lcom/intellij/openapi/roots/ModifiableRootModel;)V",
+            ),
+        ],
+    );
+    add(
+        "ShowcaseStep",
+        "com/intellij/ide/util/projectWizard/ModuleWizardStep",
+        &[],
+        true,
+        &[
+            ("getComponent", "()Ljavax/swing/JComponent;"),
+            ("updateDataModel", "()V"),
+            ("validate", "()Z"),
+            ("disposeUIResources", "()V"),
+        ],
+    );
+    add(
+        "PreviewGutter",
+        "com/intellij/openapi/editor/markup/GutterIconRenderer",
+        &["com/intellij/openapi/project/DumbAware"],
+        true,
+        &[
+            ("getIcon", "()Ljavax/swing/Icon;"),
+            ("getTooltipText", "()Ljava/lang/String;"),
+            (
+                "getClickAction",
+                "()Lcom/intellij/openapi/actionSystem/AnAction;",
+            ),
+            ("isNavigateAction", "()Z"),
+            ("equals", "(Ljava/lang/Object;)Z"),
+            ("hashCode", "()I"),
+        ],
+    );
+    add(
+        "PreviewClick",
+        "com/intellij/openapi/actionSystem/AnAction",
+        &["com/intellij/openapi/project/DumbAware"],
+        true,
+        &[
+            (
+                "actionPerformed",
+                "(Lcom/intellij/openapi/actionSystem/AnActionEvent;)V",
+            ),
+            (
+                "getActionUpdateThread",
+                "()Lcom/intellij/openapi/actionSystem/ActionUpdateThread;",
+            ),
+        ],
+    );
+    add(
+        "ValueGlyph",
+        "java/lang/Object",
+        &["com/intellij/openapi/editor/EditorCustomElementRenderer"],
+        true,
+        &[
+            (
+                "calcWidthInPixels",
+                "(Lcom/intellij/openapi/editor/Inlay;)I",
+            ),
+            (
+                "paint",
+                "(Lcom/intellij/openapi/editor/Inlay;Ljava/awt/Graphics;Ljava/awt/Rectangle;Lcom/intellij/openapi/editor/markup/TextAttributes;)V",
+            ),
         ],
     );
     add(

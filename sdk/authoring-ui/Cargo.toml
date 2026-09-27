@@ -1,0 +1,16 @@
+[package]
+name = "cranpose-plugin-authoring-ui"
+description = "Native Cranpose editor controls and decorations for IntelliJ plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+cranpose-plugin-ux = { path = "../ux" }
+cranpose = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057", features = ["embed"] }
+cranpose-core = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057" }
+cranpose-ui-graphics = { version = "0.1.164", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "e177b19985c303a13fcf40d61decc7253fdbe057" }
+serde_json = "1"
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
+[lints]
+workspace = true

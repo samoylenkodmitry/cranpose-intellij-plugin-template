@@ -37,6 +37,7 @@ pub struct Project {
     editor_stamp: Mutex<String>,
     editor_key: Mutex<Option<(String, i64)>>,
     pub editor: Mutex<crate::editor::State>,
+    pub authoring: Mutex<crate::authoring::State>,
 }
 impl Project {
     pub fn get(j: &mut J<'_>, object: &O) -> Result<Arc<Self>> {
@@ -62,6 +63,7 @@ impl Project {
             editor_stamp: Mutex::new(String::new()),
             editor_key: Mutex::new(None),
             editor: Mutex::new(crate::editor::State::default()),
+            authoring: Mutex::new(crate::authoring::State::default()),
         });
         registry.push(project.clone());
         drop(registry);
@@ -179,6 +181,7 @@ impl Project {
         if crate::features().stability {
             crate::stability::install(self, j, &multicaster)?;
         }
+        crate::authoring::install(self, j, &multicaster)?;
         Ok(())
     }
     fn tick(self: &Arc<Self>, j: &mut J<'_>) -> Result<()> {
@@ -211,6 +214,7 @@ impl Project {
         }
         self.update_editor(j, false)?;
         crate::editor::fit_overlays(self, j)?;
+        crate::authoring::tick(self, j)?;
         if crate::features().stability {
             crate::stability::tick(self, j)?;
         }
@@ -618,6 +622,7 @@ impl Project {
             j.void(timer, "stop", "()V", &[])?;
         }
         crate::stability::clear(self, j)?;
+        crate::authoring::dispose(self, j)?;
         let workspaces = self
             .workspaces
             .lock()
@@ -864,6 +869,7 @@ pub fn navigate(
     line: i32,
     column: i32,
 ) -> Result<()> {
+    crate::workspace::reveal_source(project, j, path)?;
     let fs = j.static_obj(
         "com/intellij/openapi/vfs/LocalFileSystem",
         "getInstance",

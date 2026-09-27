@@ -26,10 +26,15 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                     services as fn(&mut J<'_>) -> Result<()>,
                 ),
                 ("native surface pixels and disposal", surface),
+                (
+                    "transparent editor overlay preserves source",
+                    crate::surface::Surface::test_overlay_paint,
+                ),
                 ("persistent Cargo configuration", configuration),
                 ("native Cranpose rendering", native_ui),
                 ("preview UI reconnection", reconnect),
                 ("inline stability badges", inlays),
+                ("Cranpose authoring markers and wizard", authoring),
             ] {
                 if (matches!(
                     name,
@@ -382,4 +387,9 @@ fn inlays(j: &mut J<'_>) -> Result<()> {
 fn reconnect(j: &mut J<'_>) -> Result<()> {
     let p = project(j)?;
     crate::workspace::integration_test(p, j)
+}
+fn authoring(j: &mut J<'_>) -> Result<()> {
+    let p = project(j)?;
+    crate::authoring::integration_test(&p, j)?;
+    crate::wizard::integration_test(j)
 }

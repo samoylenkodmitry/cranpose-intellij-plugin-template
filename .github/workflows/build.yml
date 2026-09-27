@@ -23,6 +23,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p cranpose-plugin-cache
+      - run: cargo test --locked -p cranpose-plugin-authoring
       - run: cargo test --locked -p cranpose-plugin-process -p cranpose-plugin-host --test lifecycle --test session_lifecycle
   native:
     name: Rust host and Cranpose UI (${{ matrix.platform }})
@@ -69,6 +70,7 @@ jobs:
       - run: cargo run --locked -p cranpose-template-tools -- release audit-source
       - run: cargo run --locked -p cranpose-template-tools -- fetch-ide
       - run: cargo run --locked -p cranpose-template-tools -- ide-test --ide "$CRANPOSE_TEST_IDE"
+      - run: cargo run --locked -p cranpose-template-tools -- authoring-smoke --binary target/debug/cranpose-intellij-ui --log authoring.log --report authoring.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -77,6 +79,8 @@ jobs:
             target/ide-tests/**/evidence
             target/ide-tests/**/console.log
             target/ide-tests/**/log
+            authoring.log
+            authoring.json
           if-no-files-found: ignore
   plugin:
     name: Verified plugin (all platforms)

@@ -38,6 +38,11 @@ struct State {
     viewport: [i32; 2],
 }
 impl Workspace {
+    pub fn live_values(&self, payload: &str) {
+        if let Some((_, panel)) = &self.state.lock().expect("workspace").active {
+            panel.message("cranpose.dev.values", payload);
+        }
+    }
     pub fn new(project: Arc<Project>, j: &mut J<'_>, source: O) -> Result<Arc<Self>> {
         let options = project::options(j, true)?;
         let studio = Panel::new(j, options)?;
@@ -630,6 +635,30 @@ pub fn show(
     function: Option<&str>,
     target: Option<&Target>,
 ) -> Result<()> {
+    reveal_source(project, j, path)?;
+    let workspaces = project
+        .workspaces
+        .lock()
+        .expect("workspaces")
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect::<Vec<_>>();
+    for workspace in workspaces {
+        if workspace.source_path == path {
+            if let Some(function) = function {
+                workspace.command(json!({"action":"showFunction","name":function}));
+            }
+            if let Some(target) = target {
+                workspace.command(json!({"action":"showTarget","target":target}));
+            }
+            workspace.studio.start(j)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reveal a source editor without starting or replacing its preview session.
+pub fn reveal_source(project: &Project, j: &mut J<'_>, path: &str) -> Result<()> {
     let fs = j.static_obj(
         "com/intellij/openapi/vfs/LocalFileSystem",
         "getInstance",
@@ -674,24 +703,6 @@ pub fn show(
                 "(Lcom/intellij/openapi/fileEditor/TextEditorWithPreview$Layout;)V",
                 &[A::O(&layout)],
             )?;
-        }
-    }
-    let workspaces = project
-        .workspaces
-        .lock()
-        .expect("workspaces")
-        .iter()
-        .filter_map(std::sync::Weak::upgrade)
-        .collect::<Vec<_>>();
-    for workspace in workspaces {
-        if workspace.source_path == path {
-            if let Some(function) = function {
-                workspace.command(json!({"action":"showFunction","name":function}));
-            }
-            if let Some(target) = target {
-                workspace.command(json!({"action":"showTarget","target":target}));
-            }
-            workspace.studio.start(j)?;
         }
     }
     Ok(())

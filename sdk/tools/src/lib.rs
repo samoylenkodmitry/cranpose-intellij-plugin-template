@@ -1,3 +1,4 @@
+mod authoring_smoke;
 mod bridge;
 mod hot_smoke;
 mod ide_test;
@@ -35,6 +36,8 @@ enum Task {
     HotSmoke(hot_smoke::Options),
     /// Profile the Cranpose Studio inspector with repeatable synthetic layouts.
     InspectionProfile(inspection_profile::Options),
+    /// Verify native editor shader decorations and settled idle rendering.
+    AuthoringSmoke(authoring_smoke::Options),
     BridgeTest {
         java: Option<PathBuf>,
         #[arg(long)]
@@ -62,6 +65,7 @@ pub fn run_cli(config: BuildConfig) -> Result<()> {
         Task::Release(task) => release::run(task),
         Task::HotSmoke(options) => hot_smoke::run(options),
         Task::InspectionProfile(options) => inspection_profile::run(options),
+        Task::AuthoringSmoke(options) => authoring_smoke::run(options),
         Task::BridgeTest { java, ide } => bridge_test(java, ide),
         Task::Package {
             native_dir,

@@ -263,10 +263,18 @@ impl Panel {
                     }
                 }
                 SessionEvent::Stopped(message) => {
-                    {
+                    let children = {
                         let mut state = self.state.lock().expect("panel");
                         state.connected = false;
                         state.session.take();
+                        state
+                            .children
+                            .drain()
+                            .map(|(_, surface)| surface)
+                            .collect::<Vec<_>>()
+                    };
+                    for surface in children {
+                        surface.close(j)?;
                     }
                     self.primary.state.lock().expect("surface").status = message.clone();
                     self.primary.repaint(j)?;
@@ -525,6 +533,49 @@ impl Panel {
     }
 }
 impl Surface {
+    #[cfg(feature = "ide-tests")]
+    pub(crate) fn test_overlay_paint(j: &mut J<'_>) -> Result<()> {
+        let options = crate::project::options(j, false)?;
+        let panel = Panel::new(j, options)?;
+        panel.overlay(j, 1, "editor")?;
+        let surface = panel.overlay_surface(1).context("overlay")?;
+        j.void(surface.component(), "setSize", "(II)V", &[A::I(4), A::I(4)])?;
+        surface.frame(
+            j,
+            &Frame {
+                surface: 1,
+                id: 1,
+                buffer_width: 4,
+                buffer_height: 4,
+                x: 0,
+                y: 0,
+                width: 4,
+                height: 4,
+                pixels: vec![0; 16],
+            },
+        )?;
+        let image = j.new(
+            "java/awt/image/BufferedImage",
+            "(III)V",
+            &[A::I(4), A::I(4), A::I(2)],
+        )?;
+        j.void(
+            &image,
+            "setRGB",
+            "(III)V",
+            &[A::I(1), A::I(1), A::I(0xff123456u32 as i32)],
+        )?;
+        let graphics = j.obj(&image, "createGraphics", "()Ljava/awt/Graphics2D;", &[])?;
+        surface.paint(j, &graphics)?;
+        j.void(&graphics, "dispose", "()V", &[])?;
+        anyhow::ensure!(
+            j.call(&image, "getRGB", "(II)I", &[A::I(1), A::I(1)])?
+                .i()?
+                == 0xff123456u32 as i32,
+            "Transparent editor overlay erased the source beneath it"
+        );
+        panel.close(j)
+    }
     fn uninitialized(id: u32, panel: Weak<Panel>, overlay: bool) -> Self {
         Self {
             id,
@@ -732,20 +783,23 @@ impl Surface {
         self.repaint(j)
     }
     fn paint(&self, j: &mut J<'_>, graphics: &O) -> Result<()> {
-        let (image, screen, status, transparent, selection, content) = {
+        let (image, screen, status, transparent, overlay, selection, content) = {
             let state = self.state.lock().expect("surface");
             (
                 state.image.clone(),
                 state.screen_scale,
                 state.status.clone(),
                 state.transparent,
+                state.overlay,
                 state.selection,
                 state.content_scale,
             )
         };
         let g = j.obj(graphics, "create", "()Ljava/awt/Graphics;", &[])?;
         let result = (|| -> Result<()> {
-            if transparent {
+            // Embedded overlays paint over the editor's existing pixels. Clearing
+            // this shared graphics target would erase the source underneath.
+            if transparent && !overlay {
                 let clear = j.constant(
                     "java/awt/AlphaComposite",
                     "Clear",
@@ -768,12 +822,14 @@ impl Surface {
             }
             let width = j.int(self.component(), "getWidth")?;
             let height = j.int(self.component(), "getHeight")?;
-            j.void(
-                &g,
-                "fillRect",
-                "(IIII)V",
-                &[A::I(0), A::I(0), A::I(width), A::I(height)],
-            )?;
+            if !overlay {
+                j.void(
+                    &g,
+                    "fillRect",
+                    "(IIII)V",
+                    &[A::I(0), A::I(0), A::I(width), A::I(height)],
+                )?;
+            }
             if transparent {
                 let src = j.constant(
                     "java/awt/AlphaComposite",
