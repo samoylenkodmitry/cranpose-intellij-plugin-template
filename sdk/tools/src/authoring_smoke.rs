@@ -198,6 +198,7 @@ pub fn run(options: Options) -> Result<()> {
         let mut brightest = 0;
         let mut target_pixels = 0;
         let mut capture = crate::ui_probe::FrameCapture::default();
+        let mut evidence = None;
         while started.elapsed() < Duration::from_millis(1500) {
             if let Ok(event) = receive.recv_timeout(Duration::from_millis(50))
                 && let Event::Frame(mut frame) = event?
@@ -206,30 +207,12 @@ pub fn run(options: Options) -> Result<()> {
                 frames += 1;
                 frame.surface = 0;
                 capture.update(&frame);
-                let mut painted = 0;
-                let mut impact = 0;
-                for y in 0..300 * scale {
-                    for x in 0..640 * scale {
-                        let alpha = capture.pixel(x, y).map_or(0, |p| p.0[3]);
-                        if alpha > 30 {
-                            painted += 1;
-                        }
-                        if alpha > 30
-                            && (516 * scale..616 * scale).contains(&x)
-                            && (166 * scale..198 * scale).contains(&y)
-                        {
-                            impact += 1;
-                        }
-                    }
-                }
+                let (painted, impact) =
+                    capture.alpha_counts(30, [516 * scale, 166 * scale, 616 * scale, 198 * scale]);
                 target_pixels = target_pixels.max(impact);
                 if painted > brightest {
                     brightest = painted;
-                    capture.save(
-                        &options
-                            .log
-                            .with_file_name(format!("lightning-{scale}x.png")),
-                    )?;
+                    evidence = Some(capture.clone());
                 }
             }
         }
@@ -237,11 +220,16 @@ pub fn run(options: Options) -> Result<()> {
             frames >= 3 && brightest > 500 && target_pixels > 100,
             "Lightning must animate across source and target at {scale}x: frames={frames} painted={brightest} target={target_pixels}"
         );
-        let alpha_left = (0..300 * scale)
-            .any(|y| (0..640 * scale).any(|x| capture.pixel(x, y).is_some_and(|p| p.0[3] > 0)));
+        let alpha_left = capture.alpha_counts(0, [0; 4]).0 > 0;
         ensure!(!alpha_left, "Lightning must finish transparent at {scale}x");
         let animation_cpu = crate::process_metrics::sample(&[child.id()])?[0] - animation_cpu;
         lightning.push(json!({"scale":scale,"frames":frames,"paintedPixels":brightest,"impactPixels":target_pixels,"finishedTransparent":true,"cpuSeconds":animation_cpu,"observationSeconds":started.elapsed().as_secs_f64()}));
+        // PNG encoding must not hold up the frame receiver or its acknowledgments.
+        evidence.context("Lightning evidence")?.save(
+            &options
+                .log
+                .with_file_name(format!("lightning-{scale}x.png")),
+        )?;
     }
     // Wait for settling, then demand event-driven idle rendering.
     let settle = Instant::now() + Duration::from_secs(2);

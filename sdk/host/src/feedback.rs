@@ -108,7 +108,7 @@ pub fn document_changed(project: &Arc<Project>, j: &mut J<'_>, event: &O) -> Res
     project.feedback.lock().expect("feedback").edit = Some(Edit {
         path,
         stamp: j.long(&document, "getModificationStamp")?,
-        offset: offset + length.saturating_sub(1).min(1),
+        offset: offset + length.saturating_sub(1),
         started: Instant::now(),
     });
     // A new edit invalidates an older in-flight match, even if temporarily invalid Rust.
