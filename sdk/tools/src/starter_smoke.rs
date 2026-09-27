@@ -20,7 +20,7 @@ pub fn run(options: Options) -> Result<()> {
     let elapsed = started.elapsed();
     let manifest = fs::read_to_string(options.output.join("Cargo.toml"))?;
     ensure!(
-        manifest.contains("cranpose = \"0.1.167\""),
+        manifest.contains("cranpose = \"0.1.169\""),
         "Pinned framework"
     );
     ensure!(

@@ -221,7 +221,7 @@ pub fn starter_manifest(name: &str) -> Result<String> {
         "Use lowercase letters, digits, hyphens or underscores, starting with a letter."
     );
     Ok(format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ncranpose = {{ git = \"https://github.com/samoylenkodmitry/Cranpose\", rev = \"e177b19985c303a13fcf40d61decc7253fdbe057\", features = [\"desktop\", \"preview\"] }}\n"
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ncranpose = {{ git = \"https://github.com/samoylenkodmitry/Cranpose\", rev = \"0ccc2a2bc4f9ad9002dcdb80ff2e75aa707494bb\", features = [\"desktop\", \"preview\"] }}\n"
     ))
 }
 #[cfg(test)]
