@@ -20,13 +20,21 @@ impl<T: PartialEq + Clone> LastValue<T> {
 /// composable state's equality policy without forgetting the newest accepted revision.
 /// Create a fresh gate when a connection starts a new sequence.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct SequenceGate(std::rc::Rc<std::cell::Cell<u64>>);
+pub struct SequenceGate(std::rc::Rc<std::cell::Cell<(u64, u64)>>);
 impl SequenceGate {
+    /// Allocate a distinct request even while an older reply is still in flight.
+    pub fn next_request(&self) -> u64 {
+        let (accepted, issued) = self.0.get();
+        let next = accepted.max(issued).saturating_add(1);
+        self.0.set((accepted, next));
+        next
+    }
     pub fn accept(&self, revision: u64) -> bool {
-        if revision < self.0.get() {
+        let (accepted, issued) = self.0.get();
+        if revision < accepted {
             return false;
         }
-        self.0.set(revision);
+        self.0.set((revision, issued));
         true
     }
 }
@@ -34,6 +42,19 @@ impl SequenceGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn request_numbers_advance_without_rejecting_in_flight_replies() {
+        let gate = SequenceGate::default();
+        assert_eq!(gate.next_request(), 1);
+        assert_eq!(gate.next_request(), 2);
+        assert!(gate.accept(1));
+        assert!(gate.accept(2));
+        assert!(!gate.accept(1));
+        assert_eq!(gate.clone().next_request(), 3);
+        assert_eq!(gate.next_request(), 4);
+        assert!(gate.accept(10));
+        assert_eq!(gate.next_request(), 11);
+    }
     #[test]
     fn unchanged_model_clones_share_the_latest_revision() {
         let gate = SequenceGate::default();

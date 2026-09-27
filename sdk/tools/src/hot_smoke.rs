@@ -199,7 +199,7 @@ impl Host {
             if Instant::now() >= next {
                 self.send(Packet::message(
                     "cranpose.inspector.v2.request",
-                    &json!({"requestId":request_id}).to_string(),
+                    &request_id.to_string(),
                 ))?;
                 next = Instant::now() + Duration::from_millis(200);
             }
@@ -688,10 +688,7 @@ fn profile_idle(
         let mut requests = 0;
         while started.elapsed() < Duration::from_secs(u64::from(seconds)) {
             if mode == "inspecting" && Instant::now() >= request {
-                host.send(Packet::message(
-                    "cranpose.inspector.v2.request",
-                    r#"{"requestId":1}"#,
-                ))?;
+                host.send(Packet::message("cranpose.inspector.v2.request", "1"))?;
                 request = Instant::now() + Duration::from_millis(500);
                 requests += 1;
             }

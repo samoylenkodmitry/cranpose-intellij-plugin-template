@@ -159,11 +159,7 @@ fn verify_text(host: &crate::hot_smoke::Host, expected: &str) -> Result<()> {
     let mut next = Instant::now();
     while Instant::now() < deadline {
         if Instant::now() >= next {
-            message(
-                host,
-                "cranpose.inspector.v2.request",
-                json!({"requestId":1}),
-            )?;
+            message(host, "cranpose.inspector.v2.request", json!(1))?;
             next = Instant::now() + Duration::from_millis(200);
         }
         for response in host.messages.try_iter() {
