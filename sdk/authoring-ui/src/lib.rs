@@ -110,7 +110,7 @@ pub fn EditorDecorations() {
                                             colors.accent.0,
                                             colors.accent.1,
                                             colors.accent.2,
-                                            0.28,
+                                            0.60,
                                         ),
                                     );
                                 },

@@ -1259,12 +1259,31 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         // Real Editor offsets and mouse events resolve aliases after Unicode;
         // repeated hover reuses both the popup and its one native renderer.
         let aliases = "// 🦀\n#[composable]\nfn Card(){ let tint = Color(0.19,0.42,0.31,0.5); let spacing = 24.0; Text(tint); Space(spacing); }";
-        j.void(
-            &document,
-            "setText",
-            "(Ljava/lang/CharSequence;)V",
-            &[A::S(aliases)],
+        let doc = document.clone();
+        let write_id = jvm::register(move |j, _, _| {
+            j.void(
+                &doc,
+                "setText",
+                "(Ljava/lang/CharSequence;)V",
+                &[A::S(aliases)],
+            )?;
+            j.null()
+        });
+        let write = jvm::callback(j, write_id)?;
+        let application = j.static_obj(
+            "com/intellij/openapi/application/ApplicationManager",
+            "getApplication",
+            "()Lcom/intellij/openapi/application/Application;",
+            &[],
         )?;
+        let written = j.void(
+            &application,
+            "runWriteAction",
+            "(Ljava/lang/Runnable;)V",
+            &[A::O(&write)],
+        );
+        jvm::unregister(write_id);
+        written?;
         let catalog = Catalog::parse(aliases)?;
         place(project, j, &editor, "test.rs", &catalog)?;
         let reference = catalog
@@ -1380,6 +1399,10 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         project.authoring.lock().expect("authoring").control = None;
         Ok(())
     })();
+    if result.is_err() && j.env.exception_check()? {
+        j.env.exception_describe()?;
+        j.env.exception_clear()?;
+    }
     unwatch_editor(project, j)?;
     clear_placed(project, j)?;
     j.void(
