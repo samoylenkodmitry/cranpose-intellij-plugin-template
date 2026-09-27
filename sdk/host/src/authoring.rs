@@ -329,29 +329,12 @@ fn place(
         let name = function.name.clone();
         let identity = Arc::new(std::sync::atomic::AtomicI64::new(0));
         let captured = identity.clone();
-        let id = jvm::register(move |j, op, args| match op {
-            "PreviewGutter.getIcon" => editor::icon(j),
+        let id = jvm::register(move |j, op, _args| match op {
             "PreviewGutter.getTooltipText" => j.string(&format!("Preview {name} · Cranpose")),
-            "PreviewGutter.isNavigateAction" => j.boxed_bool(true),
-            "PreviewGutter.equals" => {
-                let same = !args[0].is_null()
-                    && j.env
-                        .is_instance_of(&args[0], "dev/cranpose/rust/PreviewGutter")?
-                    && j.id(&args[0])? == captured.load(std::sync::atomic::Ordering::Relaxed);
-                j.boxed_bool(same)
-            }
-            "PreviewGutter.hashCode" => {
-                j.boxed_int(captured.load(std::sync::atomic::Ordering::Relaxed) as i32)
-            }
             "PreviewGutter.getClickAction" => j.new(
                 "dev/cranpose/rust/PreviewClick",
                 "(J)V",
                 &[A::J(captured.load(std::sync::atomic::Ordering::Relaxed))],
-            ),
-            "PreviewClick.getActionUpdateThread" => j.constant(
-                "com/intellij/openapi/actionSystem/ActionUpdateThread",
-                "EDT",
-                "Lcom/intellij/openapi/actionSystem/ActionUpdateThread;",
             ),
             "PreviewClick.actionPerformed" => {
                 if let Some(p) = weak.upgrade() {
@@ -854,6 +837,7 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             items.len() == 3,
             "Expected one preview marker and two live-value glyphs"
         );
+        let mut retired = Vec::new();
         for (object, literal) in items {
             if let Some(id) = literal {
                 let token = ["\"Café 🦀\"", "12"][id];
@@ -917,7 +901,65 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                     .z()?,
                     "Gutter renderer identity"
                 );
+                let action = j.obj(
+                    &renderer,
+                    "getClickAction",
+                    "()Lcom/intellij/openapi/actionSystem/AnAction;",
+                    &[],
+                )?;
+                let hash = j.int(&renderer, "hashCode")?;
+                retired.push((renderer, action, hash));
             }
+        }
+        clear_placed(project, j)?;
+        // Model the IDE's delayed paint/action caches: native state is gone,
+        // but retained Java objects must still fulfill their non-null contracts.
+        for (renderer, action, hash) in retired {
+            let icon = j.obj(&renderer, "getIcon", "()Ljavax/swing/Icon;", &[])?;
+            ensure!(
+                !icon.is_null() && j.int(&icon, "getIconWidth")? > 0,
+                "Retired gutter renderer must keep a paintable icon"
+            );
+            ensure!(
+                j.int(&renderer, "hashCode")? == hash
+                    && j.call(
+                        &renderer,
+                        "equals",
+                        "(Ljava/lang/Object;)Z",
+                        &[A::O(&renderer)]
+                    )?
+                    .z()?
+                    && j.bool(&renderer, "isNavigateAction")?,
+                "Retired gutter metadata must stay stable"
+            );
+            ensure!(
+                j.obj(&renderer, "getTooltipText", "()Ljava/lang/String;", &[])?
+                    .is_null()
+                    && j.obj(
+                        &renderer,
+                        "getClickAction",
+                        "()Lcom/intellij/openapi/actionSystem/AnAction;",
+                        &[]
+                    )?
+                    .is_null(),
+                "Disposed gutter callbacks must release their native state"
+            );
+            ensure!(
+                !j.obj(
+                    &action,
+                    "getActionUpdateThread",
+                    "()Lcom/intellij/openapi/actionSystem/ActionUpdateThread;",
+                    &[]
+                )?
+                .is_null(),
+                "Retired action must keep its update-thread contract"
+            );
+            j.void(
+                &action,
+                "actionPerformed",
+                "(Lcom/intellij/openapi/actionSystem/AnActionEvent;)V",
+                &[A::Null],
+            )?;
         }
         Ok(())
     })();

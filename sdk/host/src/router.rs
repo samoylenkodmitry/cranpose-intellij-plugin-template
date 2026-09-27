@@ -7,6 +7,31 @@ use anyhow::Result;
 use std::sync::Arc;
 
 pub fn dispatch(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Result<O> {
+    // IntelliJ can retain a gutter renderer in a paint cache after its range
+    // highlighter is disposed. Non-null properties must outlive native callbacks.
+    match operation {
+        "PreviewGutter.getIcon" => return crate::editor::icon(j),
+        "PreviewGutter.isNavigateAction" => return j.boxed_bool(true),
+        "PreviewGutter.hashCode" => {
+            let id = j.id(receiver)?;
+            return j.boxed_int(id as i32);
+        }
+        "PreviewGutter.equals" => {
+            let same = !args[0].is_null()
+                && j.env
+                    .is_instance_of(&args[0], "dev/cranpose/rust/PreviewGutter")?
+                && j.id(&args[0])? == j.id(receiver)?;
+            return j.boxed_bool(same);
+        }
+        "PreviewClick.getActionUpdateThread" => {
+            return j.constant(
+                "com/intellij/openapi/actionSystem/ActionUpdateThread",
+                "EDT",
+                "Lcom/intellij/openapi/actionSystem/ActionUpdateThread;",
+            );
+        }
+        _ => {}
+    }
     #[cfg(feature = "ide-tests")]
     if operation.starts_with("SelfTest.") {
         return crate::ide_tests::dispatch(j, operation);
