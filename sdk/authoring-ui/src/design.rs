@@ -102,7 +102,27 @@ impl NumberRange {
         if integer {
             format!("{v:.0}")
         } else {
-            format_float(v)
+            let decimals = |n: f64| {
+                n.to_string()
+                    .split_once('.')
+                    .map_or(0, |(_, fraction)| fraction.len())
+            };
+            let places = decimals(self.min).max(decimals(self.step));
+            if places <= 17 {
+                let text = format!("{v:.places$}");
+                if text.contains('.') {
+                    let text = text.trim_end_matches('0');
+                    if text.ends_with('.') {
+                        format!("{text}0")
+                    } else {
+                        text.into()
+                    }
+                } else {
+                    format!("{text}.0")
+                }
+            } else {
+                format_float(v)
+            }
         }
     }
     pub fn fraction(self, value: f64) -> f32 {
@@ -531,6 +551,25 @@ mod tests {
         }
         assert!(NumberRange::parse("9007199254740992", "9007199254740994", "1", true).is_none());
         assert_eq!(NumberRange::around("255", true, "u8").max, 255.0);
+        assert_eq!(
+            NumberRange::parse("0.1", "0.9", "0.1", false)
+                .expect("decimal range")
+                .at(0.25, false),
+            "0.3"
+        );
+        assert_eq!(
+            NumberRange::parse(
+                "0",
+                "0.00000000000000000002",
+                "0.00000000000000000001",
+                false
+            )
+            .expect("tiny range")
+            .at(0.5, false)
+            .parse::<f64>()
+            .expect("number"),
+            1e-20
+        );
     }
     #[test]
     fn colors_round_trip_and_reject_incomplete_hex() {

@@ -121,6 +121,13 @@ impl Catalog {
             .literals
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("Unknown live literal"))?;
+        if self.formats.iter().any(|f| f.literal == id) {
+            ensure!(
+                runtime::format_parts(value).map(|(_, fields)| fields)
+                    == runtime::format_parts(&literal.value).map(|(_, fields)| fields),
+                "Keep format fields unchanged; edit placeholders in source to rebuild"
+            );
+        }
         let token = match literal.kind.as_str() {
             "string" => {
                 ensure!(

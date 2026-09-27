@@ -54,8 +54,9 @@ explicit integer suffix bounds; larger integers retain exact text entry.
 have one color swatch. This includes ordinary non-const palette functions.
 The Cranpose picker accepts hex and provides hue, saturation, brightness and
 opacity sliders. It replaces all four channels atomically; Reset restores their
-original values. Constants, named colors, RGB/u8 constructors and computed
-channels keep their ordinary compiler behavior. Helper values take effect when
+original values. Constants and named colors remain compiled. RGB/u8 constructors
+and computed channels are not grouped; eligible scalar arguments still have
+individual controls inside composables. Helper values take effect when
 the helper is called again.
 
 Text in `format!`, `std::format!` and `alloc::format!` is live inside composables.
