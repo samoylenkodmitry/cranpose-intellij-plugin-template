@@ -39,7 +39,7 @@ impl DerivedFile {
         })
     }
     pub fn load(&self) -> Result<Option<Vec<u8>>> {
-        let bytes = match fs::read(&self.path) {
+        let bytes = match sharing_retry(|| fs::read(&self.path)) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
@@ -58,8 +58,28 @@ impl DerivedFile {
         file.write_all(&Sha256::digest(bytes))?;
         file.write_all(bytes)?;
         file.flush()?;
-        file.persist(&self.path)?;
+        // Close the temporary handle before exposing it to other publishers.
+        let temporary = file.into_temp_path();
+        sharing_retry(|| fs::rename(&temporary, &self.path))?;
         Ok(())
+    }
+}
+
+// Windows can briefly deny replacement while another reader or publisher closes
+// its handle. Bound that wait; a persistent denial remains a best-effort cache error.
+fn sharing_retry<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    loop {
+        match operation() {
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(5 | 32 | 33))
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            result => return result,
+        }
     }
 }
 
@@ -115,6 +135,41 @@ mod tests {
         assert_eq!(
             cache.load().expect("cache fixture operation"),
             Some(b"repaired".to_vec())
+        );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn sharing_conflicts_retry_but_persistent_denial_preserves_the_old_record() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = tempfile::tempdir().expect("cache directory");
+        let cache = DerivedFile::new(root.path(), &[("input", b"same")]).expect("cache");
+        cache.store(b"before").expect("initial record");
+        let hold = || {
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&cache.path)
+                .expect("exclusive handle")
+        };
+        let file = hold();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            drop(file);
+        });
+        cache.store(b"after").expect("retry after handle closed");
+        release.join().expect("release handle");
+        let file = hold();
+        let started = std::time::Instant::now();
+        assert!(cache.store(b"blocked").is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        drop(file);
+        assert_eq!(
+            cache.load().expect("intact record"),
+            Some(b"after".to_vec())
+        );
+        assert_eq!(
+            fs::read_dir(root.path()).expect("cache directory").count(),
+            1
         );
     }
     #[test]
