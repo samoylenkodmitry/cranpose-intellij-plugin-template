@@ -6,6 +6,8 @@ mod capture;
 pub use capture::capture;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub use windows::cpu_time;
 
 use std::{
     io,

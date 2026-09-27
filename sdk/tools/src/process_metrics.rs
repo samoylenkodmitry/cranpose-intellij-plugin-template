@@ -3,7 +3,9 @@
 use anyhow::Result;
 #[cfg(target_os = "macos")]
 pub const RESOLUTION: f64 = 0.01;
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub const RESOLUTION: f64 = 0.015625;
+#[cfg(not(any(target_os = "macos", windows)))]
 pub const RESOLUTION: f64 = 1.0;
 
 #[cfg(unix)]
@@ -41,9 +43,17 @@ pub fn sample<const N: usize>(pids: &[u32; N]) -> Result<[f64; N]> {
     }
     Ok(samples)
 }
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn sample<const N: usize>(pids: &[u32; N]) -> Result<[f64; N]> {
+    let mut samples = [0.0; N];
+    for (index, pid) in pids.iter().enumerate() {
+        samples[index] = cranpose_ide_host::process::cpu_time(*pid)?.as_secs_f64();
+    }
+    Ok(samples)
+}
+#[cfg(not(any(unix, windows)))]
 pub fn sample<const N: usize>(_pids: &[u32; N]) -> Result<[f64; N]> {
-    anyhow::bail!("--idle-seconds CPU sampling currently requires macOS or Linux")
+    anyhow::bail!("CPU sampling requires macOS, Linux or Windows")
 }
 #[cfg(any(unix, test))]
 fn parse_time(text: &str) -> Result<f64> {
