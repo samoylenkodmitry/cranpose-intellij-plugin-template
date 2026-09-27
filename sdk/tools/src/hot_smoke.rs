@@ -46,6 +46,9 @@ pub struct Options {
     /// Measure startup without making source edits.
     #[arg(long)]
     pub startup_only: bool,
+    /// Start replacements while the current preview stays alive, as IDE Restart does.
+    #[arg(long, default_value_t = 0, requires = "startup_only", value_parser = clap::value_parser!(u32).range(0..=20))]
+    pub restart_rounds: u32,
     /// Seconds per idle phase: visible, inspecting every 500 ms, and hidden.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=120))]
     pub idle_seconds: u32,
@@ -81,18 +84,21 @@ struct Cleanup {
 }
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        if let Err(error) = fs::write(&self.source, &self.original) {
+        if fs::read_to_string(&self.source).ok().as_deref() != Some(&self.original)
+            && let Err(error) = fs::write(&self.source, &self.original)
+        {
             eprintln!("Restore fixture: {error}");
         }
         let _ = self.child.terminate(Duration::from_secs(2));
     }
 }
-struct Host {
+pub(crate) struct Host {
     writer: Arc<Mutex<TcpStream>>,
-    messages: mpsc::Receiver<Result<(String, Value, Instant)>>,
-    frames: Arc<AtomicUsize>,
+    pub(crate) messages: mpsc::Receiver<Result<(String, Value, Instant)>>,
+    pub(crate) frames: Arc<AtomicUsize>,
     runtime: Value,
     applied_at: Option<Instant>,
+    next_request: u64,
 }
 impl Drop for Host {
     fn drop(&mut self) {
@@ -104,7 +110,7 @@ impl Drop for Host {
     }
 }
 impl Host {
-    fn new(mut stream: TcpStream, token: &str) -> Result<Self> {
+    pub(crate) fn new(mut stream: TcpStream, token: &str) -> Result<Self> {
         stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         ensure!(
@@ -154,6 +160,7 @@ impl Host {
             frames,
             runtime: Value::Null,
             applied_at: None,
+            next_request: 0,
         };
         host.send(
             Packet::new(1)
@@ -166,7 +173,7 @@ impl Host {
         host.send(Packet::new(13).int(0).byte(1))?;
         Ok(host)
     }
-    fn send(&self, packet: Packet) -> Result<()> {
+    pub(crate) fn send(&self, packet: Packet) -> Result<()> {
         packet.send(&mut *self.writer.lock().expect("socket"))
     }
     fn click(&self, x: f32, y: f32) -> Result<()> {
@@ -184,13 +191,15 @@ impl Host {
         seconds: u64,
         after_generation: Option<u64>,
     ) -> Result<Value> {
+        self.next_request += 1;
+        let request_id = self.next_request;
         let deadline = Instant::now() + Duration::from_secs(seconds);
         let mut next = Instant::now();
         while Instant::now() < deadline {
             if Instant::now() >= next {
                 self.send(Packet::message(
                     "cranpose.inspector.v2.request",
-                    r#"{"requestId":1}"#,
+                    &request_id.to_string(),
                 ))?;
                 next = Instant::now() + Duration::from_millis(200);
             }
@@ -201,7 +210,9 @@ impl Host {
                         println!("{}", json!({"runtime":payload}));
                         self.runtime = payload;
                         self.applied_at = Some(received_at);
-                    } else if channel == "cranpose.inspector.v2.snapshot" && !self.runtime.is_null()
+                    } else if channel == "cranpose.inspector.v2.snapshot"
+                        && !self.runtime.is_null()
+                        && payload["requestId"] == request_id
                     {
                         let nodes = payload["nodes"].as_array().context("Inspector nodes")?;
                         // A recomposed layout may reach the host before the runtime's
@@ -230,31 +241,18 @@ impl Host {
         )
     }
 }
-pub fn run(options: Options) -> Result<()> {
-    let fixture_dir = tempfile::tempdir()?;
-    let fixture_lease = if options.reuse_fixture {
-        Some(cranpose_plugin_cache::WorkspaceLease::acquire(
-            &options.cache.join("fixtures"),
-            options.fixture.as_deref().context("fixture")?.as_bytes(),
-        )?)
-    } else {
-        None
-    };
-    let fixture_path = fixture_lease
-        .as_ref()
-        .map(|lease| lease.path())
-        .unwrap_or(fixture_dir.path());
-    let workspace = if let Some(workspace) = options.workspace {
-        workspace
-    } else {
-        copy_fixture(
-            &crate::root()
-                .join("dev-runner/tests/fixtures")
-                .join(options.fixture.context("fixture")?),
-            fixture_path,
-        )?;
-        fixture_path.to_owned()
-    };
+struct StartedPreview {
+    cleanup: Cleanup,
+    host: Host,
+    snapshot: Value,
+    pids: [u32; 3],
+    startup_ms: f64,
+    support_builds: Vec<Value>,
+    cargo_build_ms: Option<f64>,
+    startup_phases: Value,
+}
+
+fn launch(options: &Options, workspace: &std::path::Path) -> Result<StartedPreview> {
     let source = workspace.join(&options.source);
     let original = fs::read_to_string(&source)?;
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
@@ -268,7 +266,7 @@ pub fn run(options: Options) -> Result<()> {
     let mut command = Command::new(options.runner.canonicalize()?);
     command
         .arg(config.to_string())
-        .current_dir(&workspace)
+        .current_dir(workspace)
         .env("CRANPOSE_EMBED_ADDRESS", listener.local_addr()?.to_string())
         .env("CRANPOSE_EMBED_TOKEN", &token)
         .stdin(Stdio::null())
@@ -280,7 +278,7 @@ pub fn run(options: Options) -> Result<()> {
     if options.build_diagnostics {
         command.env("CARGO_LOG", "cargo::core::compiler::fingerprint=info");
     }
-    if let Some(dx) = options.dx {
+    if let Some(dx) = &options.dx {
         command.env("CRANPOSE_DX", dx.canonicalize()?);
     }
 
@@ -313,7 +311,6 @@ pub fn run(options: Options) -> Result<()> {
     let mut host = Host::new(stream, &token)?;
     let snapshot = host.snapshot(&["Count: 0", "Increment"], 30)?;
     let startup_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let pid = host.runtime["pid"].clone();
     let pids = preview_pids(&cleanup, &host, &options.log)?;
     let build_log = fs::read_to_string(&options.log)?;
     let support_builds = support_builds(&build_log);
@@ -327,6 +324,54 @@ pub fn run(options: Options) -> Result<()> {
     } else {
         Value::Null
     };
+    Ok(StartedPreview {
+        cleanup,
+        host,
+        snapshot,
+        pids,
+        startup_ms,
+        support_builds,
+        cargo_build_ms,
+        startup_phases,
+    })
+}
+
+pub fn run(mut options: Options) -> Result<()> {
+    let fixture_dir = tempfile::tempdir()?;
+    let fixture_lease = if options.reuse_fixture {
+        Some(cranpose_plugin_cache::WorkspaceLease::acquire(
+            &options.cache.join("fixtures"),
+            options.fixture.as_deref().context("fixture")?.as_bytes(),
+        )?)
+    } else {
+        None
+    };
+    let fixture_path = fixture_lease
+        .as_ref()
+        .map(|lease| lease.path())
+        .unwrap_or(fixture_dir.path());
+    let workspace = if let Some(workspace) = &options.workspace {
+        workspace.clone()
+    } else {
+        copy_fixture(
+            &crate::root()
+                .join("dev-runner/tests/fixtures")
+                .join(options.fixture.as_deref().context("fixture")?),
+            fixture_path,
+        )?;
+        fixture_path.to_owned()
+    };
+    let StartedPreview {
+        mut cleanup,
+        mut host,
+        snapshot,
+        pids,
+        startup_ms,
+        support_builds,
+        cargo_build_ms,
+        startup_phases,
+    } = launch(&options, &workspace)?;
+    let pid = host.runtime["pid"].clone();
     if options.require_cached_workspace {
         ensure!(
             startup_phases["workspaceReused"] == true,
@@ -356,9 +401,43 @@ pub fn run(options: Options) -> Result<()> {
         Vec::new()
     };
     if options.startup_only {
-        let shutdown_ms = stop_preview(&mut cleanup.child, &pids)?;
+        let mut restarts = Vec::new();
+        let base_log = options.log.clone();
+        let mut active_pids = pids;
+        for round in 1..=options.restart_rounds {
+            options.log = base_log.with_extension(format!("restart-{round}.log"));
+            let StartedPreview {
+                cleanup: next_cleanup,
+                host: next_host,
+                snapshot: _,
+                pids: next_pids,
+                startup_ms: next_startup_ms,
+                support_builds: next_support,
+                cargo_build_ms: next_cargo_ms,
+                startup_phases: next_phases,
+            } = launch(&options, &workspace)?;
+            // The IDE retains the old preview until connection. Keeping it through
+            // the first snapshot also verifies that the replacement really renders.
+            ensure!(
+                cleanup.child.try_wait()?.is_none(),
+                "Active preview exited during Restart"
+            );
+            let probe = Instant::now();
+            host.snapshot(&["Count: 0", "Increment"], 10)?;
+            let active_response_ms = probe.elapsed().as_secs_f64() * 1000.0;
+            let shutdown_ms = stop_preview(&mut cleanup.child, &active_pids)?;
+            restarts.push(json!({"round":round, "startupMs":next_startup_ms,
+                "startupPhases":next_phases, "cargoReportedBuildMs":next_cargo_ms,
+                "supportBuilds":next_support, "previousResponseMs":active_response_ms,
+                "previousShutdownMs":shutdown_ms, "stoppedPids":active_pids,
+                "replacementPids":next_pids, "log":options.log}));
+            cleanup = next_cleanup;
+            host = next_host;
+            active_pids = next_pids;
+        }
+        let shutdown_ms = stop_preview(&mut cleanup.child, &active_pids)?;
         let result = json!({"result":"passed", "mode":"startup", "startupMs":startup_ms,
-            "idle":idle, "shutdownMs":shutdown_ms, "stoppedPids":pids, "snapshotPollMs":200, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
+            "idle":idle, "restarts":restarts, "shutdownMs":shutdown_ms, "stoppedPids":active_pids, "snapshotPollMs":200, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
         drop(cleanup);
         if let Some(lease) = fixture_lease {
             lease.complete()?;
@@ -489,6 +568,10 @@ fn startup_evidence(log: &str) -> Value {
         .iter()
         .find(|event| event["cranposeDev"] == "workspaceLease")
         .and_then(|event| event["reused"].as_bool());
+    let private_workspace = events
+        .iter()
+        .find(|event| event["cranposeDev"] == "workspace")
+        .and_then(|event| event["private"].as_str());
     let timestamp = |message: &str| {
         events.iter().find_map(|event| {
             event["message"].as_str()?.contains(message).then_some(())?;
@@ -501,7 +584,7 @@ fn startup_evidence(log: &str) -> Value {
             (seconds.is_finite() && seconds >= 0.0).then_some(seconds * 1000.0)
         })
     };
-    json!({"runner":runner, "dependencyCacheHit":cache_hit, "workspaceReused":workspace_reused,
+    json!({"runner":runner, "privateWorkspace":private_workspace, "dependencyCacheHit":cache_hit, "workspaceReused":workspace_reused,
         "compilerServingMs":timestamp("Serving your app:"),
         "compilerBuildCompletedMs":timestamp("Build completed successfully")})
 }
@@ -605,10 +688,7 @@ fn profile_idle(
         let mut requests = 0;
         while started.elapsed() < Duration::from_secs(u64::from(seconds)) {
             if mode == "inspecting" && Instant::now() >= request {
-                host.send(Packet::message(
-                    "cranpose.inspector.v2.request",
-                    r#"{"requestId":1}"#,
-                ))?;
+                host.send(Packet::message("cranpose.inspector.v2.request", "1"))?;
                 request = Instant::now() + Duration::from_millis(500);
                 requests += 1;
             }
@@ -801,8 +881,9 @@ mod tests {
                 frames: Arc::new(AtomicUsize::new(0)),
                 runtime: json!({"generation":0,"pid":42}),
                 applied_at: None,
+                next_request: 0,
             };
-            let snapshot = json!({"nodes":[{"text":"edited"}]});
+            let snapshot = json!({"requestId":1,"nodes":[{"text":"edited"}]});
             let now = Instant::now();
             if snapshot_first {
                 sender
@@ -830,8 +911,25 @@ mod tests {
             sender
                 .send(Ok(("cranpose.inspector.v2.snapshot".into(), snapshot, now)))
                 .expect("snapshot");
-            host.snapshot_after(&["edited"], 1, Some(0))
+            let observed = host
+                .snapshot_after(&["edited"], 1, Some(0))
                 .expect("confirmed snapshot");
+            assert_eq!(observed["requestId"], 1);
+            // A queued response from the previous call must not prove responsiveness.
+            sender
+                .send(Ok(("cranpose.inspector.v2.snapshot".into(), observed, now)))
+                .expect("old reply");
+            sender
+                .send(Ok((
+                    "cranpose.inspector.v2.snapshot".into(),
+                    json!({"requestId":2,"nodes":[{"text":"edited"}]}),
+                    now,
+                )))
+                .expect("fresh reply");
+            assert_eq!(
+                host.snapshot(&["edited"], 1).expect("fresh snapshot")["requestId"],
+                2
+            );
             assert_eq!(host.runtime["generation"], 1);
             assert_eq!(host.applied_at, Some(now));
         }
