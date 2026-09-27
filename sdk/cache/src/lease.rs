@@ -99,6 +99,17 @@ impl WorkspaceLease {
     /// The source's executable permissions and filename (including .exe) are preserved.
     pub fn stage_executable(&self, source: &Path) -> Result<PathBuf> {
         let source = source.canonicalize().context("resolve tool executable")?;
+        self.stage_executable_as(&source, source.file_name().context("tool filename")?)
+    }
+    /// Stage a tool with a specific command name in this lease's private tool directory.
+    /// This supports native command proxies without adding scripts to PATH.
+    pub fn stage_executable_as(&self, source: &Path, name: &std::ffi::OsStr) -> Result<PathBuf> {
+        let name_path = Path::new(name);
+        ensure!(
+            !name.is_empty() && name_path.file_name() == Some(name),
+            "Tool alias must be a single filename"
+        );
+        let source = source.canonicalize().context("resolve tool executable")?;
         ensure!(source.is_file(), "Tool executable is not a regular file");
         ensure!(
             !source.starts_with(&self.slot),
@@ -107,7 +118,7 @@ impl WorkspaceLease {
         let identity = Sha256::digest(source.as_os_str().as_encoded_bytes());
         let directory = self.slot.join("tools").join(format!("{identity:x}"));
         fs::create_dir_all(&directory)?;
-        let alias = directory.join(source.file_name().context("tool filename")?);
+        let alias = directory.join(name);
         match fs::symlink_metadata(&alias) {
             Ok(metadata) => {
                 ensure!(
@@ -191,6 +202,20 @@ mod tests {
         let source = lease.path().join("tool");
         fs::write(&source, "tool")?;
         assert!(lease.stage_executable(&source).is_err());
+        Ok(())
+    }
+    #[test]
+    fn named_tools_stay_inside_their_lease() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("native-tool");
+        fs::write(&source, "tool")?;
+        let lease = WorkspaceLease::acquire(&root.path().join("cache"), b"project")?;
+        let alias = lease.stage_executable_as(&source, "cc".as_ref())?;
+        assert_eq!(alias.file_name(), Some("cc".as_ref()));
+        assert_eq!(fs::read(&alias)?, b"tool");
+        for name in ["", ".", "..", "../cc", "path/cc", "/cc"] {
+            assert!(lease.stage_executable_as(&source, name.as_ref()).is_err());
+        }
         Ok(())
     }
     #[test]
