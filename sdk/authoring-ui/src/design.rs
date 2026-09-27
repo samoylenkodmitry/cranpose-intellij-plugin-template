@@ -445,7 +445,9 @@ pub(crate) fn NumberControls(
             UiBox(Modifier::empty().height(42.0), BoxSpec::default(), || {});
             Row(
                 Modifier::empty().fill_max_width(),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::SpaceBetween),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::SpaceBetween)
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     Text(
                         "SEEK TO PREVIEW",
@@ -489,7 +491,9 @@ pub(crate) fn NumberControls(
             }
             Row(
                 Modifier::empty().fill_max_width(),
-                RowSpec::default().horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                RowSpec::default()
+                    .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                    .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
                     for (label, state) in [("Min", minimum), ("Max", maximum), ("Step", step)] {
                         Column(
@@ -563,7 +567,9 @@ pub(crate) fn ColorControls(
                 cranpose::key(index, move || {
                     Row(
                         Modifier::empty().fill_max_width(),
-                        RowSpec::default().horizontal_arrangement(LinearArrangement::SpaceBetween),
+                        RowSpec::default()
+                            .horizontal_arrangement(LinearArrangement::SpaceBetween)
+                            .vertical_alignment(VerticalAlignment::CenterVertically),
                         move || {
                             Text(label, Modifier::empty(), style(colors.muted, 11.0));
                             Text(

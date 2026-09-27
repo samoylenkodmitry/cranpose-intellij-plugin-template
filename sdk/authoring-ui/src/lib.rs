@@ -2,8 +2,8 @@
 use cranpose::{
     BasicTextField, Box as UiBox, BoxSpec, Color, Column, ColumnSpec, GraphicsLayer,
     LinearArrangement, Modifier, Row, RowSpec, SpanStyle, Text, TextFieldState, TextStyle,
-    composable, remember, rememberHostMessages, rememberMutableStateOf, send_to_host,
-    text::TextUnit,
+    VerticalAlignment, composable, remember, rememberHostMessages, rememberMutableStateOf,
+    send_to_host, text::TextUnit,
 };
 use cranpose_core::CollectEvents;
 use cranpose_ui_graphics::{
@@ -286,7 +286,9 @@ fn ControlForm(init: Value) {
                 move || {
                     Row(
                         Modifier::empty().fill_max_width(),
-                        RowSpec::default().horizontal_arrangement(LinearArrangement::SpaceBetween),
+                        RowSpec::default()
+                            .horizontal_arrangement(LinearArrangement::SpaceBetween)
+                            .vertical_alignment(VerticalAlignment::CenterVertically),
                         move || {
                             Text(
                                 if kind.get() == "color" {
@@ -341,7 +343,8 @@ fn ControlForm(init: Value) {
                     Row(
                         Modifier::empty().fill_max_width(),
                         RowSpec::default()
-                            .horizontal_arrangement(LinearArrangement::spaced_by(8.0)),
+                            .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                            .vertical_alignment(VerticalAlignment::CenterVertically),
                         move || {
                             match kind.get().as_str() {
                                 "int" | "float" => {

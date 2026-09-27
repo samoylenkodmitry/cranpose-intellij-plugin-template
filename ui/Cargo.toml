@@ -23,10 +23,10 @@ desktop = ["cranpose/desktop"]
 [dependencies]
 cranpose-plugin-authoring-ui = { path = "../sdk/authoring-ui" }
 cranpose-plugin-ux = { path = "../sdk/ux" }
-cranpose = { version = "0.1.169", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "0ccc2a2bc4f9ad9002dcdb80ff2e75aa707494bb", features = ["embed"] }
-cranpose-animation = { version = "0.1.169", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "0ccc2a2bc4f9ad9002dcdb80ff2e75aa707494bb" }
-cranpose-core = { version = "0.1.169", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "0ccc2a2bc4f9ad9002dcdb80ff2e75aa707494bb" }
-cranpose-ui-graphics = { version = "0.1.169", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "0ccc2a2bc4f9ad9002dcdb80ff2e75aa707494bb" }
+cranpose = { version = "0.1.170", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "9656ee2eff7e07374279205cefbc40f07f87ce93", features = ["embed"] }
+cranpose-animation = { version = "0.1.170", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "9656ee2eff7e07374279205cefbc40f07f87ce93" }
+cranpose-core = { version = "0.1.170", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "9656ee2eff7e07374279205cefbc40f07f87ce93" }
+cranpose-ui-graphics = { version = "0.1.170", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "9656ee2eff7e07374279205cefbc40f07f87ce93" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
