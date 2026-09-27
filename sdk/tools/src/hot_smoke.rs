@@ -107,7 +107,6 @@ pub(crate) struct Host {
     expected_values: Option<Value>,
     confirmed_values: Option<u64>,
     composed: Option<u64>,
-    composed_at: Option<Instant>,
     next_request: u64,
     capture: Option<Arc<Mutex<crate::ui_probe::FrameCapture>>>,
 }
@@ -185,7 +184,6 @@ impl Host {
             expected_values: None,
             confirmed_values: None,
             composed: None,
-            composed_at: None,
             next_request: 0,
             capture: captured,
         };
@@ -248,7 +246,6 @@ impl Host {
                         }
                     } else if channel == "cranpose.dev.composed" {
                         self.composed = payload["generation"].as_u64();
-                        self.composed_at = Some(received_at);
                     } else if channel == "cranpose.dev.applied" {
                         println!("{}", json!({"runtime":payload}));
                         self.runtime = payload;
@@ -574,10 +571,6 @@ pub fn run(mut options: Options) -> Result<()> {
                     && pixel != before
                 {
                     ensure!(at >= sent, "Color frame predates edit");
-                    ensure!(
-                        at >= host.composed_at.context("Composition confirmation")?,
-                        "Composition confirmation arrived after the changed frame; settled IDE feedback would stall"
-                    );
                     break Some((at - sent).as_secs_f64() * 1000.0);
                 }
                 ensure!(
@@ -1155,7 +1148,6 @@ mod tests {
                 expected_values: None,
                 confirmed_values: None,
                 composed: None,
-                composed_at: None,
                 next_request: 0,
             };
             let snapshot = json!({"requestId":1,"nodes":[{"text":"edited"}]});

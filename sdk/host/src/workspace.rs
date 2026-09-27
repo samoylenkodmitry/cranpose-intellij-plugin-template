@@ -440,24 +440,38 @@ impl Workspace {
                         channel,
                         "cranpose.dev.values.result" | "cranpose.dev.composed"
                     ) {
-                        let (rejected, trace) = {
+                        let (rejected, trace, request) = {
                             let mut state = workspace.state.lock().expect("workspace");
-                            let rejected = state.active.as_ref().is_some_and(|a| a.0 == id)
-                                && state
-                                    .trace
-                                    .as_mut()
-                                    .is_some_and(|t| t.message(channel, payload));
+                            if state.active.as_ref().is_none_or(|a| a.0 != id) {
+                                return Ok(());
+                            }
+                            let rejected = state
+                                .trace
+                                .as_mut()
+                                .is_some_and(|t| t.message(channel, payload));
                             let trace = state.trace.clone();
                             if rejected {
                                 state.trace = None;
                             }
-                            (rejected, trace)
+                            // Cranpose queues outgoing composition messages. A
+                            // changed frame may arrive before its confirmation.
+                            // Require both, accepting either delivery order.
+                            let last_frame = state.last_frame;
+                            let request = state.trace.as_mut().and_then(|t| {
+                                last_frame
+                                    .filter(|frame| t.follows(*frame))
+                                    .and_then(|_| t.request())
+                            });
+                            (rejected, trace, request)
                         };
                         if let Some(trace) = trace {
                             trace.log(j, channel, payload)?;
                         }
                         if rejected {
                             crate::feedback::stop(&workspace.project, j)?;
+                        }
+                        if let Some(request) = request {
+                            panel.message("cranpose.inspector.v2.request", &request.to_string());
                         }
                     }
                     if channel == "cranpose.inspector.v2.snapshot"

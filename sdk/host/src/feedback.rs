@@ -35,6 +35,7 @@ pub struct Trace {
     revision: u64,
     schema: String,
     generation: Option<u64>,
+    acknowledged: Option<Instant>,
     composed: Option<Instant>,
     request: Option<u64>,
     attempts: usize,
@@ -64,7 +65,7 @@ impl Trace {
         Ok(())
     }
     pub fn follows(&self, frame: Instant) -> bool {
-        self.composed.is_some_and(|composed| frame >= composed)
+        self.composed.is_some() && self.acknowledged.is_some_and(|ack| frame >= ack)
     }
     /// Ignore stale acknowledgments, rejected source schemas and composition
     /// events from another update. A frame alone is not proof of live values.
@@ -81,6 +82,7 @@ impl Trace {
                 return true;
             }
             self.generation = value["generation"].as_u64();
+            self.acknowledged = Some(Instant::now());
         } else if channel == "cranpose.dev.composed"
             && self.generation.is_some()
             && value["generation"].as_u64() == self.generation
@@ -193,6 +195,7 @@ pub fn parsed(project: &Arc<Project>, path: &str, stamp: i64, catalog: &Catalog,
         revision,
         schema: catalog.schema.clone(),
         generation: None,
+        acknowledged: None,
         composed: None,
         request: None,
         attempts: 0,
@@ -532,6 +535,7 @@ mod tests {
             schema: c.schema,
             revision: 42,
             generation: None,
+            acknowledged: None,
             composed: None,
             request: None,
             attempts: 0,
@@ -590,6 +594,30 @@ mod tests {
             let ack = json!({"file":t.file,"schema":t.schema,"revision":42,"accepted":accepted,"changed":false}).to_string();
             assert!(t.message("cranpose.dev.values.result", &ack));
             assert!(t.request().is_none());
+        }
+    }
+    #[test]
+    fn frame_and_composition_can_arrive_in_either_order() {
+        for frame_first in [true, false] {
+            let mut t = trace();
+            let old_frame = Instant::now();
+            let ack = json!({"file":t.file,"schema":t.schema,"revision":42,"accepted":true,"changed":true,"generation":7}).to_string();
+            t.message("cranpose.dev.values.result", &ack);
+            let mut frame = Instant::now();
+            assert!(
+                !t.follows(frame),
+                "A frame alone cannot confirm composition"
+            );
+            t.message("cranpose.dev.composed", "{\"generation\":7}");
+            if !frame_first {
+                frame = Instant::now();
+            }
+            assert!(!t.follows(old_frame));
+            assert!(t.follows(frame));
+            assert!(
+                t.request().is_some(),
+                "A settled frame must not need another repaint"
+            );
         }
     }
 }
