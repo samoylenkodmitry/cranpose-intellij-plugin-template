@@ -67,3 +67,28 @@ On a second Studio launch, `--profile-startup --require-cached-dependencies`
 asserts that a private lockfile was restored. Combine it with
 `--build-diagnostics --require-cached-support` to check helper crate reuse. These
 are regression assertions; elapsed-time comparisons need repeated controlled runs.
+
+## Reusable private workspaces
+
+`WorkspaceLease::acquire(root, identity)` obtains a private directory at a reusable
+path. Identify the project with its canonical path and an application format tag.
+An OS file lock provides exclusive access. Concurrent callers skip busy slots and
+receive different directories immediately. Acquiring a clean slot clears its old
+contents before returning it, while its path stays stable for compiler caches.
+
+Call `complete(self)` only after every process using the directory has exited.
+Ordinary Drop leaves a busy marker. Failed or killed owners are never automatically
+reused, because descendants might still be alive after the owner's lock closes.
+Abandoned directories remain until the caller clears its cache with all users
+stopped. The cache is private infrastructure and must be outside application source.
+
+Tests exercise separate OS processes, forced owner exit, concurrent access,
+project separation and removal of old files after clean shutdown. CI runs them on
+macOS, Linux and Windows.
+
+`hot-smoke --fixture counter --reuse-fixture` uses the same mechanism to keep a
+fixture's source path stable across completed runs. Add `--profile-startup
+--require-cached-workspace` on restart to assert that the runner also reused its
+private path. A new fixture or concurrent run has a separate directory; a failed
+run leaves its fixture abandoned. Application and test process cleanup completes
+before either directory becomes available again.

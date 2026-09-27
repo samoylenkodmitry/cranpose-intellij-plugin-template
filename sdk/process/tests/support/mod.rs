@@ -163,5 +163,18 @@ fn fixture() {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    drop(worker);
+    #[cfg(unix)]
+    if mode == "graceful"
+        && let Some(mut worker) = worker
+    {
+        worker
+            .terminate(Duration::from_millis(100))
+            .expect("worker shutdown");
+        assert!(
+            worker
+                .wait_for_tree_exit(Duration::from_secs(1))
+                .expect("shared scope exit")
+        );
+        fs::write(directory.join("shared-scope-exited"), "confirmed").expect("exit marker");
+    }
 }

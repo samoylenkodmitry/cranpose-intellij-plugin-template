@@ -109,6 +109,11 @@ generated support crates; the first launch after a support change must warm them
 When the log includes Cargo's rounded `Finished` timing, `cargoReportedBuildMs`
 records that phase separately from launch-to-first-snapshot `startupMs`. It is
 null when Cargo's log format provides no recognizable timing.
+`--reuse-fixture` keeps a fixture's source path stable across clean runs, using an
+exclusive workspace lease. On the second launch, `--require-cached-workspace`
+asserts that the runner reused its private workspace too. Give each compared
+runner its own warm cache: sharing a Cargo output directory lets one variant
+replace the other's incremental artifacts and confounds restart measurements.
 
 ## Make it yours
 
