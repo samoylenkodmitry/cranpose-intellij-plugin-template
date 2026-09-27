@@ -1,5 +1,6 @@
 //! Theme and inspection support shared by Cranpose IDE plugins.
 pub mod tree;
+pub mod viewport;
 use serde::Deserialize;
 
 #[cfg(test)]

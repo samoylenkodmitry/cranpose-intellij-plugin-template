@@ -189,3 +189,15 @@ The shared Rust tools include two optional performance probes:
 Both probes use owned processes and bounded shutdown. Studio runs them in CI.
 `delivery::SequenceGate` shares the accepted revision across UI model clones, so
 discarding an equal model cannot allow an older asynchronous reply to replace it.
+
+`viewport::RowWindow` limits fixed-height Cranpose lists to visible rows plus
+overscan. Put its `before` and `after` spacers around the returned range and read
+reactive scroll state at the call site. Rows must have the declared height;
+clamp the stored scroll offset when filtering shrinks the content.
+
+`inspection-profile --change-rounds 10 --exercise-tree --max-ui-nodes 200`
+also verifies real changed labels, scrolling to the final row, collapse while
+scrolled, expansion and return to the first row. The node budget checks that a
+large inspector composes a bounded UI. Timings include JSON transport and the
+UI inspector acknowledgement (polled every 20 ms); they are not frame times.
+Initial and changed-layout CPU samples cover the Studio UI process only.

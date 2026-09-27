@@ -30,6 +30,15 @@ pub struct Options {
     /// Fail if unchanged visible snapshots trigger rendering after settling.
     #[arg(long)]
     require_quiet: bool,
+    /// Measure content changes through the real UI and verify the resulting labels.
+    #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=50))]
+    change_rounds: u32,
+    /// Exercise end-of-list scrolling, collapse at the end and expansion.
+    #[arg(long)]
+    exercise_tree: bool,
+    /// Structural budget for the composed UI, independent of machine speed.
+    #[arg(long)]
+    max_ui_nodes: Option<usize>,
 }
 fn message(host: &crate::hot_smoke::Host, channel: &str, value: Value) -> Result<()> {
     host.send(Packet::message(channel, &value.to_string()))
@@ -100,8 +109,13 @@ pub fn run(options: Options) -> Result<()> {
         "width":100,"height":24,"sources":[{"name":"Item","file":"src/main.rs","line":42}],
         "modifiers":[{"name":"padding","properties":[{"name":"all","value":"12"}]}]})).collect();
     let mut request = 1;
+    let initial_cpu = crate::process_metrics::sample(&[child.id()])?[0];
+    let initial_started = Instant::now();
     snapshot(&host, &nodes, request)?;
-    verify_text(&host, "Text · Inspection item 0")?;
+    let initial_view = verify_text(&host, "Text · Inspection item 0")?;
+    check_node_budget(&initial_view, options.max_ui_nodes)?;
+    let initial_ms = initial_started.elapsed().as_secs_f64() * 1000.0;
+    let initial_cpu_seconds = crate::process_metrics::sample(&[child.id()])?[0] - initial_cpu;
     let mut phases = Vec::new();
     for visible in [true, false] {
         host.send(Packet::new(13).int(0).byte(u8::from(visible)))?;
@@ -142,6 +156,32 @@ pub fn run(options: Options) -> Result<()> {
         "Changed layout did not render"
     );
     verify_text(&host, "Text · Changed layout")?;
+    let mut changes = Vec::new();
+    for round in 0..options.change_rounds {
+        // Change every label to exercise real tree composition, not an unchanged poll.
+        for (index, node) in nodes.iter_mut().enumerate() {
+            node["text"] = json!(format!("Update {round} item {index}"));
+        }
+        request += 1;
+        let cpu_before = crate::process_metrics::sample(&[child.id()])?[0];
+        let started = Instant::now();
+        snapshot(&host, &nodes, request)?;
+        let view = verify_text(&host, &format!("Text · Update {round} item 0"))?;
+        check_node_budget(&view, options.max_ui_nodes)?;
+        let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let cpu_seconds = crate::process_metrics::sample(&[child.id()])?[0] - cpu_before;
+        changes.push(json!({"round":round,"latencyMs":latency_ms,"cpuSeconds":cpu_seconds,
+            "uiNodes":view["nodes"].as_array().map(Vec::len),"uiSnapshotTruncated":view["truncated"]}));
+    }
+    let tree_checks = if options.exercise_tree {
+        ensure!(
+            options.nodes >= 100,
+            "Tree scrolling checks require at least 100 nodes"
+        );
+        Some(exercise_tree(&host, &nodes)?)
+    } else {
+        None
+    };
     child.terminate(Duration::from_secs(2))?;
     ensure!(
         child.wait_for_tree_exit(Duration::from_secs(2))?,
@@ -149,32 +189,176 @@ pub fn run(options: Options) -> Result<()> {
     );
     let result = json!({"result":"passed","nodes":options.nodes,"phases":phases,
         "changedLayoutRendered":true,"cpuClockResolutionSeconds":crate::process_metrics::RESOLUTION,
-        "snapshotIntervalMs":500,"settleSeconds":options.settle_seconds});
+        "snapshotIntervalMs":500,"settleSeconds":options.settle_seconds,
+        "initialLayout":{"latencyMs":initial_ms,"cpuSeconds":initial_cpu_seconds,
+            "uiNodes":initial_view["nodes"].as_array().map(Vec::len),"uiSnapshotTruncated":initial_view["truncated"]},
+        "changedLayouts":changes,"treeChecks":tree_checks});
     fs::write(&options.report, serde_json::to_vec_pretty(&result)?)?;
     println!("{result}");
     Ok(())
 }
-fn verify_text(host: &crate::hot_smoke::Host, expected: &str) -> Result<()> {
+fn check_node_budget(view: &Value, maximum: Option<usize>) -> Result<()> {
+    if let Some(maximum) = maximum {
+        let count = view["nodes"].as_array().context("Missing UI nodes")?.len();
+        ensure!(
+            view["truncated"] != true && count <= maximum,
+            "Inspector composed {count} UI nodes, budget {maximum}; truncated={}",
+            view["truncated"]
+        );
+    }
+    Ok(())
+}
+
+fn verify_text(host: &crate::hot_smoke::Host, expected: &str) -> Result<Value> {
+    verify_view(host, expected, |view| text_node(view, expected).is_some())
+}
+
+fn text_node<'a>(view: &'a Value, expected: &str) -> Option<&'a Value> {
+    view["nodes"]
+        .as_array()?
+        .iter()
+        .find(|node| node["text"] == expected)
+}
+
+fn verify_view(
+    host: &crate::hot_smoke::Host,
+    description: &str,
+    matches: impl Fn(&Value) -> bool,
+) -> Result<Value> {
+    static REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = REQUEST.fetch_add(1, Ordering::Relaxed);
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut next = Instant::now();
+    let mut last = Value::Null;
     while Instant::now() < deadline {
         if Instant::now() >= next {
-            message(host, "cranpose.inspector.v2.request", json!(1))?;
-            next = Instant::now() + Duration::from_millis(200);
+            message(host, "cranpose.inspector.v2.request", json!(request))?;
+            next = Instant::now() + Duration::from_millis(20);
         }
         for response in host.messages.try_iter() {
             let (channel, payload, _) = response?;
             if channel == "cranpose.inspector.v2.snapshot"
-                && payload["nodes"]
-                    .as_array()
-                    .is_some_and(|nodes| nodes.iter().any(|node| node["text"] == expected))
+                && payload["requestId"].as_u64() == Some(request)
             {
-                return Ok(());
+                if matches(&payload) {
+                    return Ok(payload);
+                }
+                last = payload;
             }
         }
         thread::sleep(Duration::from_millis(10));
     }
-    anyhow::bail!("Inspector UI did not display {expected:?}")
+    let labels: Vec<_> = last["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| node["text"].is_string())
+        .take(60)
+        .map(|node| json!({"text":node["text"],"x":node["x"],"y":node["y"]}))
+        .collect();
+    anyhow::bail!("Inspector UI did not display {description:?}; last labels: {labels:?}")
+}
+
+fn center(node: &Value) -> (f32, f32) {
+    let number = |key| node[key].as_f64().unwrap_or_default() as f32;
+    (
+        number("x") + number("width") / 2.0,
+        number("y") + number("height") / 2.0,
+    )
+}
+
+fn click(host: &crate::hot_smoke::Host, view: &Value, text: &str) -> Result<()> {
+    let (x, y) = center(text_node(view, text).context("Missing inspector control")?);
+    for kind in [3, 4] {
+        host.send(Packet::new(kind).int(0).float(x).float(y))?;
+    }
+    Ok(())
+}
+
+fn exercise_tree(host: &crate::hot_smoke::Host, nodes: &[Value]) -> Result<Value> {
+    let label = |index: usize| {
+        format!(
+            "Text · {}",
+            nodes[index]["text"].as_str().unwrap_or_default()
+        )
+    };
+    let first = label(0);
+    let last = label(nodes.len() - 1);
+    let view = verify_text(host, &first)?;
+    let (x, y) = center(text_node(&view, &first).context("First row")?);
+    let visible = |view: &Value, text: &str| {
+        text_node(view, text).is_some_and(|node| {
+            let (_, row_y) = center(node);
+            row_y >= y - 14.0 && row_y < 790.0
+        })
+    };
+    let scroll = |delta| {
+        host.send(
+            Packet::new(6)
+                .int(0)
+                .float(x)
+                .float(y)
+                .float(0.0)
+                .float(delta)
+                .byte(0),
+        )
+    };
+    scroll(-(nodes.len() as f32 * 40.0))?;
+    let bottom = verify_view(host, "last row at the bottom", |view| visible(view, &last))?;
+    click(host, &bottom, "Collapse all")?;
+    let collapsed = verify_view(host, "collapsed tree after scrolling", |view| {
+        visible(view, &first) && text_node(view, &last).is_none()
+    })?;
+    click(host, &collapsed, "Expand all")?;
+    let expanded = verify_view(host, "expanded first row", |view| {
+        visible(view, &first) && text_node(view, &label(1)).is_some()
+    })?;
+    scroll(-(nodes.len() as f32 * 40.0))?;
+    verify_view(host, "last row after expansion", |view| {
+        visible(view, &last)
+    })?;
+    scroll(nodes.len() as f32 * 40.0)?;
+    let top = verify_view(host, "first row after return", |view| visible(view, &first))?;
+    // The text field is immediately left of Clear and below its label.
+    let (clear_x, field_y) = center(text_node(&top, "Clear").context("Clear control")?);
+    let label_x = text_node(&top, "Filter · name, text, source or modifier")
+        .context("Filter label")?["x"]
+        .as_f64()
+        .context("Filter x")? as f32;
+    let field_x = (label_x + clear_x) / 2.0;
+    for kind in [3, 4] {
+        host.send(Packet::new(kind).int(0).float(field_x).float(field_y))?;
+    }
+    host.send(
+        Packet::new(8)
+            .int(0)
+            .text(&format!("node-{}", nodes.len() - 1)),
+    )?;
+    let filtered = verify_view(host, "last row filter", |view| {
+        visible(view, &last) && text_node(view, "1 matches").is_some()
+    })?;
+    click(host, &filtered, &last)?;
+    let details = verify_text(
+        host,
+        nodes[nodes.len() - 1]["text"]
+            .as_str()
+            .context("Last label")?,
+    )?;
+    ensure!(
+        text_node(&details, "Item :42 ↗").is_some(),
+        "Selected row lost source navigation"
+    );
+    click(host, &details, "Layout")?;
+    let filtered = verify_text(host, "1 matches")?;
+    click(host, &filtered, "Clear")?;
+    verify_view(host, "first row after clearing filter", |view| {
+        visible(view, &first) && text_node(view, &format!("{} nodes", nodes.len())).is_some()
+    })?;
+    Ok(
+        json!({"lastRowReached":true,"collapseAtBottom":true,"expandedLastRowReached":true,
+        "returnedToFirstRow":true,"filterLastRow":true,"selectedDetailsAndSource":true,
+        "clearFilter":true,"expandedUiNodes":expanded["nodes"].as_array().map(Vec::len)}),
+    )
 }
 
 fn drain(host: &crate::hot_smoke::Host) -> Result<()> {
