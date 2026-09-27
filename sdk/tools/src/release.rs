@@ -37,11 +37,16 @@ pub enum Task {
         #[arg(long)]
         java: Option<PathBuf>,
     },
+    /// Attach the signed, verified package to its matching GitHub version tag.
+    GithubRelease {
+        archive: PathBuf,
+        tag: String,
+    },
     Publish {
         archive: PathBuf,
         #[arg(long)]
         plugin_id: u64,
-        #[arg(long, default_value = "default")]
+        #[arg(long, default_value = "")]
         channel: String,
     },
 }
@@ -55,10 +60,7 @@ pub fn version() -> Result<String> {
 pub fn run(task: Task) -> Result<()> {
     match task {
         Task::ValidateTag { tag } => {
-            ensure!(
-                tag == format!("v{}", version()?),
-                "Release tag must match plugin/VERSION"
-            );
+            validate_tag(&tag, &version()?)?;
             println!("{}", version()?);
         }
         Task::CheckZip { archive, host_only } => check_zip(&archive, host_only)?,
@@ -164,11 +166,11 @@ pub fn run(task: Task) -> Result<()> {
                 .arg(signer)
                 .arg("sign")
                 .arg("-in")
-                .arg(archive)
+                .arg(&archive)
                 .arg("-out")
-                .arg(output)
+                .arg(&output)
                 .arg("-cert-file")
-                .arg(cert)
+                .arg(&cert)
                 .arg("-key-file")
                 .arg(key);
             if let Ok(password) = std::env::var("PRIVATE_KEY_PASSWORD") {
@@ -176,6 +178,48 @@ pub fn run(task: Task) -> Result<()> {
             }
             let status = command.status().context("Start JetBrains ZIP signer")?;
             ensure!(status.success(), "JetBrains ZIP signer failed ({status})");
+        }
+        Task::GithubRelease { archive, tag } => {
+            validate_tag(&tag, &version()?)?;
+            check_zip(&archive, false)?;
+            let stage = tempfile::tempdir()?;
+            let asset =
+                stage
+                    .path()
+                    .join(format!("{}-{}.zip", crate::config().directory, version()?));
+            fs::copy(&archive, &asset)?;
+            let exists = Command::new("gh")
+                .args(["release", "view", &tag])
+                .output()
+                .context("Read GitHub release")?
+                .status
+                .success();
+            if !exists {
+                let notes = crate::root().join("plugin/RELEASE_NOTES.md");
+                ensure!(notes.is_file(), "Missing plugin/RELEASE_NOTES.md");
+                output(
+                    Command::new("gh")
+                        .args([
+                            "release",
+                            "create",
+                            &tag,
+                            "--verify-tag",
+                            "--title",
+                            &tag,
+                            "--notes-file",
+                        ])
+                        .arg(notes),
+                )?;
+            }
+            output(
+                Command::new("gh")
+                    .args(["release", "upload", &tag, "--clobber"])
+                    .arg(&asset),
+            )?;
+            println!(
+                "Attached signed {} package to GitHub release {tag}",
+                version()?
+            );
         }
         Task::Publish {
             archive,
@@ -264,10 +308,7 @@ pub fn check_zip(path: &Path, host_only: bool) -> Result<()> {
     let mut xml = String::new();
     jar.by_name("META-INF/plugin.xml")?
         .read_to_string(&mut xml)?;
-    ensure!(
-        xml.contains(&format!("<id>{}</id>", crate::config().plugin_id)),
-        "Unexpected plugin ID"
-    );
+    validate_metadata(&xml, &crate::config().plugin_id, &version()?)?;
     ensure!(
         xml.contains("require-restart=\"true\""),
         "Native host updates require an IDE restart"
@@ -282,6 +323,25 @@ pub fn check_zip(path: &Path, host_only: bool) -> Result<()> {
         !jar.file_names()
             .any(|p| p.starts_with("kotlin/") || p.ends_with(".kotlin_module")),
         "Authored Kotlin remains in package"
+    );
+    Ok(())
+}
+fn validate_tag(tag: &str, version: &str) -> Result<()> {
+    semver::Version::parse(version)?;
+    ensure!(
+        tag == format!("v{version}"),
+        "Release tag must match plugin/VERSION"
+    );
+    Ok(())
+}
+fn validate_metadata(xml: &str, id: &str, version: &str) -> Result<()> {
+    ensure!(
+        xml.contains(&format!("<id>{id}</id>")),
+        "Unexpected plugin ID"
+    );
+    ensure!(
+        xml.contains(&format!("<version>{version}</version>")),
+        "Archive version must match plugin/VERSION"
     );
     Ok(())
 }
@@ -406,6 +466,21 @@ pub fn fetch_ide(product: &str, version: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn release_tag_must_match_exact_version() {
+        assert!(validate_tag("v0.12.0", "0.12.0").is_ok());
+        for tag in ["0.12.0", "v0.11.2", "v0.12.0-extra", "main"] {
+            assert!(validate_tag(tag, "0.12.0").is_err());
+        }
+    }
+    #[test]
+    fn archive_cannot_publish_stale_version_or_other_plugin() {
+        let xml = "<idea-plugin><id>dev.test</id><version>0.12.0</version></idea-plugin>";
+        assert!(validate_metadata(xml, "dev.test", "0.12.0").is_ok());
+        assert!(validate_metadata(xml, "dev.other", "0.12.0").is_err());
+        assert!(validate_metadata(xml, "dev.test", "0.11.2").is_err());
+        assert!(validate_metadata("<id>dev.test</id>", "dev.test", "0.12.0").is_err());
+    }
     #[test]
     fn source_version_is_semantic() {
         semver::Version::parse(&version().expect("version")).expect("semver");

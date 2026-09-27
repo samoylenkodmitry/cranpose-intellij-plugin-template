@@ -96,6 +96,13 @@ pub fn build(
     jar.start_file("META-INF/plugin.xml", options)?;
     jar.write_all(xml.as_bytes())?;
     let resources = root.join("plugin/src/main/resources");
+    for icon in ["pluginIcon.svg", "pluginIcon_dark.svg"] {
+        let path = resources.join("META-INF").join(icon);
+        if path.is_file() {
+            jar.start_file(format!("META-INF/{icon}"), options)?;
+            jar.write_all(&fs::read(path)?)?;
+        }
+    }
     add_directory(&mut jar, &resources.join("icons"), &resources)?;
     jar.finish()?;
     let native = if let Some(native) = native_dir {
