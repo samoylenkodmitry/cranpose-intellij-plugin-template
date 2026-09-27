@@ -21,6 +21,7 @@ use std::{
 
 #[derive(Default)]
 pub struct State {
+    wake: Option<Arc<crate::wake::Wake>>,
     pub generation: Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     key: Option<(String, i64)>,
     current: Option<Parsed>,
@@ -79,6 +80,16 @@ struct Placed {
 
 pub fn install(project: &Arc<Project>, j: &mut J<'_>, multicaster: &O) -> Result<()> {
     let weak = Arc::downgrade(project);
+    let wake = crate::wake::Wake::new(j, move |j| {
+        if let Some(project) = weak.upgrade()
+            && !project.closed.load(std::sync::atomic::Ordering::Acquire)
+        {
+            tick(&project, j)?;
+        }
+        Ok(())
+    })?;
+    project.authoring.lock().expect("authoring").wake = Some(wake);
+    let weak = Arc::downgrade(project);
     let id = project.scope.register(move |j, op, args| {
         if let Some(project) = weak.upgrade() {
             match op {
@@ -95,6 +106,44 @@ pub fn install(project: &Arc<Project>, j: &mut J<'_>, multicaster: &O) -> Result
     let callback = jvm::callback(j, id)?;
     j.void(multicaster, "addEditorMouseListener", "(Lcom/intellij/openapi/editor/event/EditorMouseListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])?;
     j.void(multicaster, "addEditorMouseMotionListener", "(Lcom/intellij/openapi/editor/event/EditorMouseMotionListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])
+}
+
+/// Only the editor already watched by this project can need a new parse.
+/// Schedule after the document write finishes; never parse inside its listener.
+pub fn document_changed(project: &Project, j: &mut J<'_>, event: &O) -> Result<()> {
+    let editor = project
+        .authoring
+        .lock()
+        .expect("authoring")
+        .watched
+        .as_ref()
+        .map(|(editor, _, _)| editor.clone());
+    if let Some(editor) = editor {
+        let document = j.obj(
+            event,
+            "getDocument",
+            "()Lcom/intellij/openapi/editor/Document;",
+            &[],
+        )?;
+        let watched = j.obj(
+            &editor,
+            "getDocument",
+            "()Lcom/intellij/openapi/editor/Document;",
+            &[],
+        )?;
+        if j.same(&document, &watched)? {
+            schedule(project, j)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn schedule(project: &Project, j: &mut J<'_>) -> Result<()> {
+    let wake = project.authoring.lock().expect("authoring").wake.clone();
+    if let Some(wake) = wake {
+        wake.request(j)?;
+    }
+    Ok(())
 }
 
 pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
@@ -206,7 +255,11 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         }
         let source = j.text(&document, "getText")?;
         let (sender, receiver) = mpsc::sync_channel(1);
-        project.authoring.lock().expect("authoring").receiver = Some(receiver);
+        let wake = {
+            let mut state = project.authoring.lock().expect("authoring");
+            state.receiver = Some(receiver);
+            state.wake.clone()
+        };
         std::thread::spawn(move || {
             let catalog = Catalog::parse(&source).ok();
             let _ = sender.send(Parsed {
@@ -215,6 +268,11 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                 source,
                 catalog,
             });
+            if let Some(wake) = wake {
+                // The regular project tick remains a fallback if JVM delivery
+                // fails. A closed wake cannot revive a disposed project.
+                let _ = wake.request_from_worker();
+            }
         });
     }
     geometry(project, j, &editor, stamp)
@@ -341,6 +399,9 @@ fn detach(project: &Project, j: &mut J<'_>) -> Result<()> {
     Ok(())
 }
 pub fn dispose(project: &Project, j: &mut J<'_>) -> Result<()> {
+    if let Some(wake) = project.authoring.lock().expect("authoring").wake.take() {
+        wake.close();
+    }
     dismiss_control(project, j)?;
     unwatch_editor(project, j)?;
     clear_placed(project, j)?;

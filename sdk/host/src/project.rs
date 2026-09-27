@@ -92,6 +92,7 @@ impl Project {
                     "Callback.documentChanged" => {
                         project.stability.lock().expect("stability").schedule();
                         crate::feedback::document_changed(&project, j, &args[0])?;
+                        crate::authoring::document_changed(&project, j, &args[0])?;
                     }
                     "Callback.editorCreated" | "Callback.editorReleased" | "Callback.after" => {
                         project.stability.lock().expect("stability").schedule()
@@ -99,6 +100,7 @@ impl Project {
                     "Callback.selectionChanged" => {
                         project.send_editor(j)?;
                         project.stability.lock().expect("stability").schedule();
+                        crate::authoring::schedule(&project, j)?;
                     }
                     "Callback.lookAndFeelChanged" => {
                         let panels = project.live_panels();
