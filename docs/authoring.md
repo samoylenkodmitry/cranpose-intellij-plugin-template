@@ -155,8 +155,9 @@ adds up to approximately 200 ms; these are not display presentation timings.
 
 An edited live value charges a small cyan/violet constellation at its source.
 The host waits for an acknowledgment identifying the exact file, schema and
-revision, a composition confirmation for that generation, and a subsequent
-preview frame. A bounded inspector request then locates the affected view.
+revision, a frame received after acceptance, and composition confirmation for
+that generation. Queued composition messages can arrive after the changed frame;
+either delivery order is accepted. A bounded inspector request then locates the affected view.
 The arrival draws an 850 ms lightning arc, expanding contour and sparks.
 Rejected or superseded edits cancel the effect; a ten-second deadline bounds
 pending work. The overlay passes pointer input through to the editor.
