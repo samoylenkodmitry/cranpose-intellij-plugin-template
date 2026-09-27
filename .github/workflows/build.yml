@@ -83,6 +83,7 @@ jobs:
             authoring.log
             authoring.json
             authoring-controls-*.png
+            lightning-*.png
           if-no-files-found: ignore
   plugin:
     name: Verified plugin (all platforms)

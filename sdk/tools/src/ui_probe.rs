@@ -13,7 +13,7 @@ pub(crate) fn verify_text(host: &crate::hot_smoke::Host, expected: &str) -> Resu
 }
 
 /// Optional capture for interaction evidence. Timing sessions leave it disabled.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct FrameCapture {
     width: u32,
     height: u32,
@@ -61,6 +61,22 @@ impl FrameCapture {
             self.rgba[offset..offset + 4].try_into().ok()?,
             self.received?,
         ))
+    }
+    /// Count opaque pixels in the full frame and a target rectangle in one pass.
+    pub fn alpha_counts(&self, threshold: u8, target: [u32; 4]) -> (usize, usize) {
+        let (mut painted, mut impact) = (0, 0);
+        for (index, pixel) in self.rgba.as_chunks::<4>().0.iter().enumerate() {
+            if pixel[3] <= threshold {
+                continue;
+            }
+            painted += 1;
+            let x = index as u32 % self.width;
+            let y = index as u32 / self.width;
+            if (target[0]..target[2]).contains(&x) && (target[1]..target[3]).contains(&y) {
+                impact += 1;
+            }
+        }
+        (painted, impact)
     }
 }
 

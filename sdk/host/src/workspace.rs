@@ -36,8 +36,26 @@ struct State {
     placement: Value,
     checkpoint: Value,
     viewport: [i32; 2],
+    trace: Option<crate::feedback::Trace>,
+    last_frame: Option<std::time::Instant>,
 }
 impl Workspace {
+    pub fn trace(&self, trace: Option<crate::feedback::Trace>) {
+        let pending = {
+            let mut state = self.state.lock().expect("workspace");
+            state.trace = trace;
+            let frame = state.last_frame;
+            let request = state
+                .trace
+                .as_mut()
+                .filter(|t| frame.is_some_and(|f| t.follows(f)))
+                .and_then(crate::feedback::Trace::request);
+            request.and_then(|id| state.active.as_ref().map(|(_, panel)| (panel.clone(), id)))
+        };
+        if let Some((panel, request)) = pending {
+            panel.message("cranpose.inspector.v2.request", &request.to_string());
+        }
+    }
     pub fn live_values(&self, payload: &str) {
         if let Some((_, panel)) = &self.state.lock().expect("workspace").active {
             panel.message("cranpose.dev.values", payload);
@@ -74,6 +92,8 @@ impl Workspace {
                 placement: Value::Null,
                 checkpoint: Value::Null,
                 viewport: [0, 0],
+                trace: None,
+                last_frame: None,
             }),
             closed: AtomicBool::new(false),
         });
@@ -386,10 +406,62 @@ impl Workspace {
                 Ok(())
             }));
         let weak = Arc::downgrade(self);
+        *panel.on_presented.lock().expect("callback") = Some(Arc::new(move |_, panel, surface| {
+            if surface != 0 {
+                return Ok(());
+            }
+            if let Some(workspace) = weak.upgrade() {
+                let request = {
+                    let mut state = workspace.state.lock().expect("workspace");
+                    if state.active.as_ref().is_none_or(|a| a.0 != id) {
+                        return Ok(());
+                    }
+                    state.last_frame = Some(std::time::Instant::now());
+                    state
+                        .trace
+                        .as_mut()
+                        .and_then(crate::feedback::Trace::request)
+                };
+                if let Some(request) = request {
+                    panel.message("cranpose.inspector.v2.request", &request.to_string());
+                }
+            }
+            Ok(())
+        }));
+        let weak = Arc::downgrade(self);
         *panel.on_message.lock().expect("callback") =
             Some(Arc::new(move |j, panel, channel, payload| {
                 if let Some(workspace) = weak.upgrade() {
-                    if channel == "host.log" {
+                    if channel == "cranpose.inspector.v2.snapshot"
+                        && crate::feedback::is_reply(payload)
+                    {
+                        let ready = {
+                            let mut state = workspace.state.lock().expect("workspace");
+                            if state.active.as_ref().is_none_or(|a| a.0 != id) {
+                                return Ok(());
+                            }
+                            let bounds = state.trace.as_mut().and_then(|t| t.reply(payload));
+                            bounds.and_then(|bounds| {
+                                state.trace.take().map(|trace| {
+                                    (
+                                        trace,
+                                        bounds,
+                                        state.placement["scale"].as_f64().unwrap_or(1.0),
+                                    )
+                                })
+                            })
+                        };
+                        if let Some((trace, bounds, scale)) = ready {
+                            crate::feedback::flash(
+                                &workspace.project,
+                                j,
+                                &trace,
+                                panel.primary.component(),
+                                bounds,
+                                scale,
+                            )?;
+                        }
+                    } else if channel == "host.log" {
                         workspace.event(id, "log", json!({"line":payload}));
                     } else if channel == "host.overlay" {
                         crate::editor::attach_overlay(&workspace.project, j, panel, payload)?;
@@ -506,6 +578,8 @@ impl Workspace {
         }
     }
     fn close_child(&self, j: &mut J<'_>, panel: &Panel) -> Result<()> {
+        self.trace(None);
+        *panel.on_presented.lock().expect("callback") = None;
         *panel.on_lifecycle.lock().expect("callback") = None;
         panel.close(j)?;
         j.void(

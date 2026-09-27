@@ -35,6 +35,10 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                 ("preview UI reconnection", reconnect),
                 ("inline stability badges", inlays),
                 ("Cranpose authoring markers and wizard", authoring),
+                (
+                    "edit-to-preview overlay coordinates",
+                    crate::feedback::integration_test,
+                ),
             ] {
                 if (matches!(
                     name,

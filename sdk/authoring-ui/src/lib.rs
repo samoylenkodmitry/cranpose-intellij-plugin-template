@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
 mod color;
 mod design;
+mod lightning;
 pub use design::{ActionChip, ArrivalAccent};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -71,6 +72,7 @@ pub fn accent_effect(color: Color) -> RenderEffect {
 
 #[composable]
 pub fn EditorDecorations() {
+    lightning::LiveEditLightning();
     let items = rememberMutableStateOf(Vec::<Value>::new);
     let colors = rememberColors();
     CollectEvents(

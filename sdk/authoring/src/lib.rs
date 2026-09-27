@@ -13,6 +13,7 @@ use syn::{
     visit_mut::{self, VisitMut},
 };
 
+pub mod feedback;
 mod references;
 pub mod runtime;
 mod source;

@@ -149,6 +149,7 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         if result.path == path && result.stamp == stamp {
             clear_placed(project, j)?;
             if let Some(catalog) = &result.catalog {
+                crate::feedback::parsed(project, &path, stamp, catalog);
                 place(project, j, &editor, &path, catalog)?;
                 if !catalog.literals.is_empty() {
                     ensure_control(project, j)?;
@@ -501,6 +502,16 @@ fn ensure_panel(project: &Arc<Project>, j: &mut J<'_>) -> Result<Arc<Panel>> {
                 && channel == "host.overlay"
             {
                 editor::attach_overlay(&p, j, panel, payload)?;
+                let overlay: Value = serde_json::from_str(payload)?;
+                if overlay["anchor"] == "window" {
+                    if let Some(surface) = overlay["surface"]
+                        .as_u64()
+                        .and_then(|id| panel.overlay_surface(id as u32))
+                    {
+                        crate::feedback::attach(&p, panel, &surface);
+                    }
+                    return Ok(());
+                }
                 {
                     let mut state = p.authoring.lock().expect("authoring");
                     state.geometry.clear();
