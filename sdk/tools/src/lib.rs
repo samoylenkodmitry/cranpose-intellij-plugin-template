@@ -1,11 +1,13 @@
 mod authoring_smoke;
 mod bridge;
+mod control_smoke;
 mod hot_smoke;
 mod ide_test;
 mod inspection_profile;
 mod package;
 mod process_metrics;
 mod release;
+mod ui_probe;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cranpose_jvm_bridge::{BRIDGE, Class, DISPATCH};

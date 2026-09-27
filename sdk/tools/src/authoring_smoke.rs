@@ -144,13 +144,14 @@ pub fn run(options: Options) -> Result<()> {
         idle_frames == 0,
         "Settled decorations emitted {idle_frames} frames"
     );
-    let report = json!({"result":"passed","paintedPixels":painted,"idleFrames":idle_frames,
+    let mut report = json!({"result":"passed","paintedPixels":painted,"idleFrames":idle_frames,
         "idleSeconds":start.elapsed().as_secs_f64(),"idleCpuSeconds":cpu});
     let _ = writer
         .lock()
         .expect("socket")
         .shutdown(std::net::Shutdown::Both);
     child.terminate(Duration::from_secs(2))?;
+    report["controls"] = crate::control_smoke::run(&options.binary, &options.log)?;
     fs::write(options.report, serde_json::to_vec_pretty(&report)?)?;
     println!("{report}");
     Ok(())

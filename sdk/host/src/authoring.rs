@@ -757,7 +757,7 @@ fn open_control(
             })
         },
     ));
-    let size = j.new("java/awt/Dimension", "(II)V", &[A::I(340), A::I(200)])?;
+    let size = j.new("java/awt/Dimension", "(II)V", &[A::I(340), A::I(240)])?;
     j.void(
         panel.primary.component(),
         "setPreferredSize",

@@ -156,17 +156,26 @@ fn submit(text: &str) {
 }
 #[composable]
 fn ControlButton(label: &'static str, colors: Colors, action: impl Fn() + Clone + 'static) {
+    let primary = label == "Apply";
     UiBox(
         Modifier::empty()
             .height(30.0)
             .padding(1.0)
             .rounded_corners(6.0)
-            .background(colors.surface)
+            .background(if primary {
+                Color(colors.accent.0, colors.accent.1, colors.accent.2, 0.18)
+            } else {
+                colors.surface
+            })
             .clickable(move |_| action())
             .padding(8.0),
         BoxSpec::default().content_alignment(cranpose::Alignment::CENTER),
         move || {
-            Text(label, Modifier::empty(), style(colors.text, 12.0));
+            Text(
+                label,
+                Modifier::empty(),
+                style(if primary { colors.accent } else { colors.text }, 12.0),
+            );
         },
     );
 }
@@ -235,6 +244,13 @@ pub fn ValueControl() {
                     .background(colors.surface)
                     .padding(9.0),
                 style(colors.text, 14.0),
+            );
+            // Keep editor actions below the field's floating selection menu.
+            // Weight absorbs spare height without moving the field or its caret.
+            UiBox(
+                Modifier::empty().columnWeight(1.0, true),
+                BoxSpec::default(),
+                || {},
             );
             Row(
                 Modifier::empty().fill_max_width(),

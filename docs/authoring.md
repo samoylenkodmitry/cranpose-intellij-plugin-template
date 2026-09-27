@@ -40,6 +40,10 @@ valid unsaved edits. Clicking a diamond opens a Cranpose control; Apply, Reset,
 numeric steps and boolean toggles use one undoable editor command. Stale controls
 refuse to overwrite newer source. Incomplete numeric input never replaces code.
 
+The value popup keeps its actions in a footer below the text field's floating
+selection menu. Apply uses the IDE accent color. Selection, clipboard actions,
+numeric steps and Reset remain available together without overlapping hit targets.
+
 A consuming development runner instruments **private debug copies only**.
 The catalog schema includes structure, literal kinds/suffixes and source lines.
 Compatible values update a shared typed store and invalidate composition without
@@ -71,6 +75,11 @@ to verify transparent shader output and zero settled frames over three seconds.
 This small fixture measures only the UI process, not the full IDE. Native IDE
 tests verify wizard adapters, gutter markers, inlay invalidation and transparent
 overlay painting over existing source pixels.
+
+The same smoke command exercises live-value controls at 1× and 2× scale. It opens
+the real selection menu, clicks Apply, Reset, numeric steps and Toggle using
+inspected bounds, and verifies the messages sent to the host. The pre-footer UI
+fails this regression because its selection menu intercepts Apply.
 
 `hot-smoke --live-values-rounds 6` additionally sends unsaved value updates over
 the production host protocol, confirms matching snapshots and unchanged PID and
