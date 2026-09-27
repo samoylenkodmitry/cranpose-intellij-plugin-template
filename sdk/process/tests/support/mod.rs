@@ -88,6 +88,20 @@ fn fixture() {
         std::process::id().to_string(),
     )
     .expect("pid file");
+    if role == "root" && mode == "parent-exit" {
+        // Keep descendants in the test owner's outer group/Job. Creating a
+        // nested SDK Job here would correctly kill them when this parent exits
+        // on Windows, so it would never exercise an exited parent with live children.
+        let compiler = command(&directory, "compiler", &mode)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("compiler with inherited owner");
+        ready(&directory);
+        std::mem::forget(compiler);
+        println!("done");
+        return;
+    }
     let worker = if role == "root" {
         Some(
             (if mode == "legacy" {
@@ -122,11 +136,6 @@ fn fixture() {
     }
     if role == "root" {
         ready(&directory);
-        if mode == "parent-exit" {
-            std::mem::forget(worker);
-            println!("done");
-            return;
-        }
         if matches!(mode.as_str(), "bad-auth" | "eof" | "handshake") {
             use std::io::Write;
             let mut socket = std::net::TcpStream::connect(
@@ -177,4 +186,6 @@ fn fixture() {
         );
         fs::write(directory.join("shared-scope-exited"), "confirmed").expect("exit marker");
     }
+    #[cfg(not(unix))]
+    drop(worker);
 }
