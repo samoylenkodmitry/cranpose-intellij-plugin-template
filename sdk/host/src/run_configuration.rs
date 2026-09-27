@@ -429,12 +429,8 @@ pub fn create_selected(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
 /// reuses the existing configuration, including any user-edited run options.
 pub fn ensure_target(project: &Project, j: &mut J<'_>, target: &Target) -> Result<O> {
     let manager = manager(project, j)?;
-    let all = j.obj(
-        &manager,
-        "getAllSettings",
-        "()[Lcom/intellij/execution/RunnerAndConfigurationSettings;",
-        &[],
-    )?;
+    let all = j.obj(&manager, "getAllSettings", "()Ljava/util/List;", &[])?;
+    let all = j.obj(&all, "toArray", "()[Ljava/lang/Object;", &[])?;
     for settings in j.elements(&all)? {
         let configuration = j.obj(
             &settings,
