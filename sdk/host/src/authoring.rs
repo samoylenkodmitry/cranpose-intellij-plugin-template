@@ -28,6 +28,10 @@ pub struct State {
     placed: Vec<Placed>,
     panel: Option<Arc<Panel>>,
     popup: Option<(O, Arc<Panel>)>,
+    control: Option<Arc<Panel>>,
+    control_request: u64,
+    control_init: Option<String>,
+    hovered: Option<usize>,
     geometry: String,
     overlay_id: Option<u32>,
     pub overlay_ready: bool,
@@ -76,15 +80,21 @@ struct Placed {
 pub fn install(project: &Arc<Project>, j: &mut J<'_>, multicaster: &O) -> Result<()> {
     let weak = Arc::downgrade(project);
     let id = project.scope.register(move |j, op, args| {
-        if op == "Callback.mouseClicked"
-            && let Some(project) = weak.upgrade()
-        {
-            click(&project, j, &args[0])?;
+        if let Some(project) = weak.upgrade() {
+            match op {
+                "Callback.mouseClicked" => pointer(&project, j, &args[0], true)?,
+                "Callback.mouseMoved" => pointer(&project, j, &args[0], false)?,
+                "Callback.mouseExited" => {
+                    project.authoring.lock().expect("authoring").hovered = None
+                }
+                _ => {}
+            }
         }
         j.null()
     });
     let callback = jvm::callback(j, id)?;
-    j.void(multicaster, "addEditorMouseListener", "(Lcom/intellij/openapi/editor/event/EditorMouseListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])
+    j.void(multicaster, "addEditorMouseListener", "(Lcom/intellij/openapi/editor/event/EditorMouseListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])?;
+    j.void(multicaster, "addEditorMouseMotionListener", "(Lcom/intellij/openapi/editor/event/EditorMouseMotionListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])
 }
 
 pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
@@ -94,7 +104,7 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         if state.arrival.as_ref().is_some_and(|a| {
             a.created.elapsed() > std::time::Duration::from_secs(5)
                 || a.shown
-                    .is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(900))
+                    .is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(1100))
         }) {
             state.arrival = None;
             state.geometry.clear();
@@ -109,9 +119,8 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         .map(|(o, _)| o.clone());
     if let Some(popup) = popup
         && j.bool(&popup, "isDisposed")?
-        && let Some((_, panel)) = project.authoring.lock().expect("authoring").popup.take()
     {
-        panel.close(j)?;
+        dismiss_control(project, j)?;
     }
     let (Some(file), Some(editor)) = project.selected(j)? else {
         return detach(project, j);
@@ -141,6 +150,9 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             clear_placed(project, j)?;
             if let Some(catalog) = &result.catalog {
                 place(project, j, &editor, &path, catalog)?;
+                if !catalog.literals.is_empty() {
+                    ensure_control(project, j)?;
+                }
                 let relative = Path::new(&path)
                     .strip_prefix(&project.root)?
                     .to_string_lossy()
@@ -230,6 +242,8 @@ fn watch_editor(project: &Arc<Project>, j: &mut J<'_>, editor: &O) -> Result<()>
         return Ok(());
     }
     unwatch_editor(project, j)?;
+    dismiss_control(project, j)?;
+    project.authoring.lock().expect("authoring").hovered = None;
     clear_placed(project, j)?;
     let disposable = j.static_obj(
         "com/intellij/openapi/util/Disposer",
@@ -301,6 +315,7 @@ fn unwatch_editor(project: &Project, j: &mut J<'_>) -> Result<()> {
     Ok(())
 }
 fn detach(project: &Project, j: &mut J<'_>) -> Result<()> {
+    dismiss_control(project, j)?;
     unwatch_editor(project, j)?;
     {
         let state = project.authoring.lock().expect("authoring");
@@ -325,17 +340,17 @@ fn detach(project: &Project, j: &mut J<'_>) -> Result<()> {
     Ok(())
 }
 pub fn dispose(project: &Project, j: &mut J<'_>) -> Result<()> {
+    dismiss_control(project, j)?;
     unwatch_editor(project, j)?;
     clear_placed(project, j)?;
-    let (panel, popup) = {
+    let (panel, control) = {
         let mut s = project.authoring.lock().expect("authoring");
-        (s.panel.take(), s.popup.take())
+        (s.panel.take(), s.control.take())
     };
     if let Some(panel) = panel {
         panel.close(j)?;
     }
-    if let Some((popup, panel)) = popup {
-        j.void(&popup, "cancel", "()V", &[])?;
+    if let Some(panel) = control {
         panel.close(j)?;
     }
     Ok(())
@@ -401,7 +416,17 @@ fn place(
         "()Lcom/intellij/openapi/editor/InlayModel;",
         &[],
     )?;
-    for literal in catalog.literals.iter().take(512) {
+    let targets = catalog
+        .literals
+        .iter()
+        .map(|l| (l.id, l.range.end_utf16))
+        .chain(
+            catalog
+                .references
+                .iter()
+                .map(|r| (r.literal, r.range.end_utf16)),
+        );
+    for (literal, end) in targets.take(1024) {
         let id = jvm::register(|j, op, _| {
             if op == "ValueGlyph.calcWidthInPixels" {
                 j.boxed_int(14)
@@ -410,7 +435,7 @@ fn place(
             }
         });
         let renderer = j.new("dev/cranpose/rust/ValueGlyph", "(J)V", &[A::J(id)])?;
-        let inlay=j.obj(&model,"addInlineElement","(IZLcom/intellij/openapi/editor/EditorCustomElementRenderer;)Lcom/intellij/openapi/editor/Inlay;",&[A::I(literal.range.end_utf16 as i32),A::Z(true),A::O(&renderer)])?;
+        let inlay=j.obj(&model,"addInlineElement","(IZLcom/intellij/openapi/editor/EditorCustomElementRenderer;)Lcom/intellij/openapi/editor/Inlay;",&[A::I(end as i32),A::Z(true),A::O(&renderer)])?;
         if inlay.is_null() {
             jvm::unregister(id);
         } else {
@@ -422,7 +447,7 @@ fn place(
                 .push(Placed {
                     object: inlay,
                     callback: id,
-                    literal: Some(literal.id),
+                    literal: Some(literal),
                 });
         }
     }
@@ -542,7 +567,7 @@ fn geometry(project: &Arc<Project>, j: &mut J<'_>, editor: &O, stamp: i64) -> Re
         return Ok(());
     }
     let mut items = vec![];
-    for placed in &state.placed {
+    for (anchor, placed) in state.placed.iter().enumerate() {
         if let Some(id) = placed.literal
             && j.bool(&placed.object, "isValid")?
         {
@@ -556,7 +581,7 @@ fn geometry(project: &Arc<Project>, j: &mut J<'_>, editor: &O, stamp: i64) -> Re
             }
             let literal = parsed.catalog.as_ref().and_then(|c| c.literals.get(id));
             let color = literal.filter(|v| v.kind == "color");
-            items.push(json!({"kind":if color.is_some(){"color"}else{"value"},"value":color.map(|v|&v.value),"x":j.field_int(&rect,"x")?-x,"y":top,"width":14,"height":height,"label":"◆","id":id}));
+            items.push(json!({"kind":if color.is_some(){"color"}else{"value"},"value":color.map(|v|&v.value),"x":j.field_int(&rect,"x")?-x,"y":top,"width":14,"height":height,"label":"◆","id":id,"anchor":anchor}));
         }
     }
     let folding = j.obj(
@@ -663,7 +688,19 @@ fn geometry(project: &Arc<Project>, j: &mut J<'_>, editor: &O, stamp: i64) -> Re
     Ok(())
 }
 
-fn click(project: &Arc<Project>, j: &mut J<'_>, event: &O) -> Result<()> {
+fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Result<()> {
+    if j.bool(event, "isConsumed")? {
+        return Ok(());
+    }
+    let area = j.obj(
+        event,
+        "getArea",
+        "()Lcom/intellij/openapi/editor/event/EditorMouseEventArea;",
+        &[],
+    )?;
+    if j.text(&area, "toString")? != "EDITING_AREA" {
+        return Ok(());
+    }
     let editor = j.obj(
         event,
         "getEditor",
@@ -680,7 +717,9 @@ fn click(project: &Arc<Project>, j: &mut J<'_>, event: &O) -> Result<()> {
         return Ok(());
     }
     let mouse = j.obj(event, "getMouseEvent", "()Ljava/awt/event/MouseEvent;", &[])?;
-    if j.int(&mouse, "getButton")? != 1 {
+    if (focus && j.int(&mouse, "getButton")? != 1)
+        || (!focus && j.int(&mouse, "getModifiersEx")? != 0)
+    {
         return Ok(());
     }
     let point = j.obj(&mouse, "getPoint", "()Ljava/awt/Point;", &[])?;
@@ -697,14 +736,80 @@ fn click(project: &Arc<Project>, j: &mut J<'_>, event: &O) -> Result<()> {
         "(Ljava/awt/Point;Ljava/lang/Class;)Lcom/intellij/openapi/editor/Inlay;",
         &[A::O(&point), A::O(&class)],
     )?;
-    if inlay.is_null() {
+    let mut state = project.authoring.lock().expect("authoring");
+    let mut literal = if inlay.is_null() {
+        None
+    } else {
+        state
+            .placed
+            .iter()
+            .find_map(|p| j.same(&p.object, &inlay).ok().filter(|v| *v).and(p.literal))
+    };
+    // Hover either the glyph or the source expression. IntelliJ provides UTF-16
+    // positions, including supplementary Unicode and soft-wrap geometry.
+    if literal.is_none()
+        && let Some(catalog) = state.current.as_ref().and_then(|p| p.catalog.as_ref())
+    {
+        let logical = j.obj(
+            &editor,
+            "xyToLogicalPosition",
+            "(Ljava/awt/Point;)Lcom/intellij/openapi/editor/LogicalPosition;",
+            &[A::O(&point)],
+        )?;
+        let offset = j
+            .call(
+                &editor,
+                "logicalPositionToOffset",
+                "(Lcom/intellij/openapi/editor/LogicalPosition;)I",
+                &[A::O(&logical)],
+            )?
+            .i()? as usize;
+        let x = j.field_int(&point, "x")?;
+        let y = j.field_int(&point, "y")?;
+        for (id, range) in catalog
+            .references
+            .iter()
+            .map(|r| (r.literal, &r.range))
+            .chain(catalog.literals.iter().map(|l| (l.id, &l.range)))
+        {
+            if offset >= range.start_utf16 && offset < range.end_utf16 {
+                let start = j.obj(
+                    &editor,
+                    "offsetToXY",
+                    "(I)Ljava/awt/Point;",
+                    &[A::I(range.start_utf16 as i32)],
+                )?;
+                let end = j.obj(
+                    &editor,
+                    "offsetToXY",
+                    "(I)Ljava/awt/Point;",
+                    &[A::I(range.end_utf16 as i32)],
+                )?;
+                if y >= j.field_int(&start, "y")?
+                    && y < j.field_int(&end, "y")? + j.int(&editor, "getLineHeight")?
+                    && (y >= j.field_int(&start, "y")? + j.int(&editor, "getLineHeight")?
+                        || x >= j.field_int(&start, "x")?)
+                    && (y < j.field_int(&end, "y")? || x < j.field_int(&end, "x")?)
+                {
+                    literal = Some(id);
+                    break;
+                }
+            }
+        }
+    }
+    if !focus && state.hovered == literal {
         return Ok(());
     }
-    let state = project.authoring.lock().expect("authoring");
-    let literal = state
-        .placed
-        .iter()
-        .find_map(|p| j.same(&p.object, &inlay).ok().filter(|v| *v).and(p.literal));
+    if focus
+        && literal.is_some()
+        && state.hovered == literal
+        && let Some((popup, panel)) = &state.popup
+        && !j.bool(popup, "isDisposed")?
+    {
+        j.bool(panel.primary.component(), "requestFocusInWindow")?;
+        return Ok(());
+    }
+    state.hovered = literal;
     let Some(id) = literal else {
         return Ok(());
     };
@@ -716,7 +821,73 @@ fn click(project: &Arc<Project>, j: &mut J<'_>, event: &O) -> Result<()> {
     };
     let source = parsed.source.clone();
     drop(state);
-    open_control(project, j, &editor, &point, id, catalog, source)
+    let document = j.obj(
+        &editor,
+        "getDocument",
+        "()Lcom/intellij/openapi/editor/Document;",
+        &[],
+    )?;
+    // A parse can be in flight while the pointer moves. Wait for a fresh catalog.
+    if j.text(&document, "getText")? != source {
+        project.authoring.lock().expect("authoring").hovered = None;
+        return Ok(());
+    }
+    open_control(project, j, &editor, &point, (id, catalog, source), focus)
+}
+
+fn dismiss_control(project: &Project, j: &mut J<'_>) -> Result<()> {
+    let old = {
+        let mut state = project.authoring.lock().expect("authoring");
+        let old = state.popup.take();
+        if old.is_some() {
+            state.control_request = state.control_request.wrapping_add(1);
+            state.control_init = None;
+        }
+        old
+    };
+    if let Some((popup, panel)) = old {
+        if !j.bool(&popup, "isDisposed")? {
+            j.void(&popup, "cancel", "()V", &[])?;
+        }
+        *panel.on_message.lock().expect("message") = None;
+        panel.send(crate::protocol::Packet::new(13).int(0).byte(0));
+        panel.primary.clear_frame(j)?;
+    }
+    Ok(())
+}
+
+/// One hidden, warmed renderer per project; hover never spawns another process.
+fn ensure_control(project: &Arc<Project>, j: &mut J<'_>) -> Result<Arc<Panel>> {
+    if let Some(panel) = &project.authoring.lock().expect("authoring").control {
+        return Ok(panel.clone());
+    }
+    let mut options = project::options(j, false)?;
+    options
+        .environment
+        .insert("CRANPOSE_AUTHORING".into(), "value".into());
+    let panel = Panel::new(j, options)?;
+    let weak = Arc::downgrade(project);
+    *panel.on_lifecycle.lock().expect("lifecycle") =
+        Some(Arc::new(move |_, panel, connected, _| {
+            if connected && let Some(project) = weak.upgrade() {
+                let init = project
+                    .authoring
+                    .lock()
+                    .expect("authoring")
+                    .control_init
+                    .clone();
+                if let Some(init) = init {
+                    panel.message("ide.authoring.control", &init);
+                } else {
+                    panel.send(crate::protocol::Packet::new(13).int(0).byte(0));
+                }
+            }
+            Ok(())
+        }));
+    project.attach(j, &panel)?;
+    panel.start(j)?;
+    project.authoring.lock().expect("authoring").control = Some(panel.clone());
+    Ok(panel)
 }
 
 fn open_control(
@@ -724,14 +895,11 @@ fn open_control(
     j: &mut J<'_>,
     editor: &O,
     point: &O,
-    id: usize,
-    catalog: Catalog,
-    source: String,
+    target: (usize, Catalog, String),
+    focus: bool,
 ) -> Result<()> {
-    if let Some((popup, panel)) = project.authoring.lock().expect("authoring").popup.take() {
-        j.void(&popup, "cancel", "()V", &[])?;
-        panel.close(j)?;
-    }
+    let (id, catalog, source) = target;
+    dismiss_control(project, j)?;
     let document = j.obj(
         editor,
         "getDocument",
@@ -756,19 +924,21 @@ fn open_control(
         "cranpose-control-{}",
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     );
-    let mut options = project::options(j, false)?;
-    options
-        .environment
-        .insert("CRANPOSE_AUTHORING".into(), "value".into());
-    let panel = Panel::new(j, options)?;
-    let init = json!({"literal":literal}).to_string();
-    *panel.on_lifecycle.lock().expect("lifecycle") =
-        Some(Arc::new(move |_, panel, connected, _| {
-            if connected {
-                panel.message("ide.authoring.control", &init);
-            }
-            Ok(())
-        }));
+    let panel = ensure_control(project, j)?;
+    let request = {
+        let mut state = project.authoring.lock().expect("authoring");
+        state.control_request = state.control_request.wrapping_add(1);
+        state.control_request
+    };
+    let binding = catalog
+        .references
+        .iter()
+        .find(|r| r.literal == id)
+        .map(|r| r.name.as_str());
+    let init = json!({"literal":literal,"request":request,"binding":binding}).to_string();
+    project.authoring.lock().expect("authoring").control_init = Some(init.clone());
+    panel.primary.clear_frame(j)?;
+    panel.message("ide.authoring.control", &init);
     let weak = Arc::downgrade(project);
     let expected = Arc::new(std::sync::Mutex::new((catalog, source)));
     let pending = Arc::new(std::sync::Mutex::new(None::<String>));
@@ -780,6 +950,9 @@ fn open_control(
             let Some(project) = weak.upgrade() else {
                 return Ok(());
             };
+            if serde_json::from_str::<Value>(payload)?["request"].as_u64() != Some(request) {
+                return Ok(());
+            }
             if pending
                 .lock()
                 .expect("pending edit")
@@ -795,6 +968,21 @@ fn open_control(
             let control_group = control_group.clone();
             jvm::later(j, move |j| {
                 if project.closed.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(());
+                }
+                if project.authoring.lock().expect("authoring").control_request != request {
+                    return Ok(());
+                }
+                let popup = project
+                    .authoring
+                    .lock()
+                    .expect("authoring")
+                    .popup
+                    .as_ref()
+                    .map(|p| p.0.clone());
+                if let Some(popup) = popup
+                    && j.bool(&popup, "isDisposed")?
+                {
                     return Ok(());
                 }
                 let Some(payload) = pending.lock().expect("pending edit").take() else {
@@ -844,8 +1032,8 @@ fn open_control(
                 panel.message(
                     "ide.authoring.result",
                     &match result {
-                        Ok(()) => json!({"ok":true}),
-                        Err(e) => json!({"ok":false,"error":e.to_string()}),
+                        Ok(()) => json!({"ok":true,"request":request}),
+                        Err(e) => json!({"ok":false,"error":e.to_string(),"request":request}),
                     }
                     .to_string(),
                 );
@@ -871,7 +1059,7 @@ fn open_control(
         &builder,
         "setRequestFocus",
         "(Z)Lcom/intellij/openapi/ui/popup/ComponentPopupBuilder;",
-        &[A::Z(true)],
+        &[A::Z(focus)],
     )?;
     let popup = j.obj(
         &builder,
@@ -885,25 +1073,36 @@ fn open_control(
         "()Ljavax/swing/JComponent;",
         &[],
     )?;
+    let x = j.field_int(point, "x")?;
+    let y = j.field_int(point, "y")? + j.int(editor, "getLineHeight")? / 2 + 4;
+    let below = j.new("java/awt/Point", "(II)V", &[A::I(x), A::I(y)])?;
     let relative = j.new(
         "com/intellij/ui/awt/RelativePoint",
         "(Ljava/awt/Component;Ljava/awt/Point;)V",
-        &[A::O(&component), A::O(point)],
+        &[A::O(&component), A::O(&below)],
     )?;
-    j.void(
-        &popup,
-        "show",
-        "(Lcom/intellij/ui/awt/RelativePoint;)V",
-        &[A::O(&relative)],
-    )?;
-    project.attach(j, &panel)?;
-    panel.start(j)?;
+    #[cfg(feature = "ide-tests")]
+    let show = !j
+        .static_call("java/awt/GraphicsEnvironment", "isHeadless", "()Z", &[])?
+        .z()?;
+    #[cfg(not(feature = "ide-tests"))]
+    let show = true;
+    if show {
+        j.void(
+            &popup,
+            "show",
+            "(Lcom/intellij/ui/awt/RelativePoint;)V",
+            &[A::O(&relative)],
+        )?;
+    }
+    panel.send(crate::protocol::Packet::new(13).int(0).byte(1));
     project.authoring.lock().expect("authoring").popup = Some((popup, panel));
     Ok(())
 }
 
 #[cfg(feature = "ide-tests")]
 pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
+    use anyhow::Context;
     let source = "// 🦀\n#[composable]\nfn Card() { Text(\"Café 🦀\"); Space(12); }\nfn palette(){ Color(0.1,0.2,0.3,1.0); }";
     let factory = j.static_obj(
         "com/intellij/openapi/editor/EditorFactory",
@@ -1057,8 +1256,153 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                 &[A::Null],
             )?;
         }
+        // Real Editor offsets and mouse events resolve aliases after Unicode;
+        // repeated hover reuses both the popup and its one native renderer.
+        let aliases = "// 🦀\n#[composable]\nfn Card(){ let tint = Color(0.19,0.42,0.31,0.5); let spacing = 24.0; Text(tint); Space(spacing); }";
+        let doc = document.clone();
+        let write_id = jvm::register(move |j, _, _| {
+            j.void(
+                &doc,
+                "setText",
+                "(Ljava/lang/CharSequence;)V",
+                &[A::S(aliases)],
+            )?;
+            j.null()
+        });
+        let write = jvm::callback(j, write_id)?;
+        let application = j.static_obj(
+            "com/intellij/openapi/application/ApplicationManager",
+            "getApplication",
+            "()Lcom/intellij/openapi/application/Application;",
+            &[],
+        )?;
+        let written = j.void(
+            &application,
+            "runWriteAction",
+            "(Ljava/lang/Runnable;)V",
+            &[A::O(&write)],
+        );
+        jvm::unregister(write_id);
+        written?;
+        let catalog = Catalog::parse(aliases)?;
+        place(project, j, &editor, "test.rs", &catalog)?;
+        let reference = catalog
+            .references
+            .iter()
+            .find(|r| r.name == "tint" && r.range.start > aliases.find("Text(").expect("call"))
+            .expect("color reference");
+        let offset = reference.range.start_utf16;
+        let reference_count = project
+            .authoring
+            .lock()
+            .expect("authoring")
+            .placed
+            .iter()
+            .filter(|p| p.literal.is_some())
+            .count();
+        ensure!(
+            reference_count == catalog.literals.len() + catalog.references.len(),
+            "Alias glyphs missing"
+        );
+        let stamp = j.long(&document, "getModificationStamp")?;
+        project.authoring.lock().expect("authoring").current = Some(Parsed {
+            path: "test.rs".into(),
+            stamp,
+            source: aliases.into(),
+            catalog: Some(catalog),
+        });
+        let component = j.obj(
+            &editor,
+            "getContentComponent",
+            "()Ljavax/swing/JComponent;",
+            &[],
+        )?;
+        let point = j.obj(
+            &editor,
+            "offsetToXY",
+            "(I)Ljava/awt/Point;",
+            &[A::I(offset as i32)],
+        )?;
+        let x = j.field_int(&point, "x")? + 2;
+        let y = j.field_int(&point, "y")? + 2;
+        let mouse = j.new(
+            "java/awt/event/MouseEvent",
+            "(Ljava/awt/Component;IJIIIIZ)V",
+            &[
+                A::O(&component),
+                A::I(503),
+                A::J(0),
+                A::I(0),
+                A::I(x),
+                A::I(y),
+                A::I(0),
+                A::Z(false),
+            ],
+        )?;
+        let area = j.constant(
+            "com/intellij/openapi/editor/event/EditorMouseEventArea",
+            "EDITING_AREA",
+            "Lcom/intellij/openapi/editor/event/EditorMouseEventArea;",
+        )?;
+        let event=j.new("com/intellij/openapi/editor/event/EditorMouseEvent","(Lcom/intellij/openapi/editor/Editor;Ljava/awt/event/MouseEvent;Lcom/intellij/openapi/editor/event/EditorMouseEventArea;)V",&[A::O(&editor),A::O(&mouse),A::O(&area)])?;
+        pointer(project, j, &event, false)?;
+        let (popup, panel) = project
+            .authoring
+            .lock()
+            .expect("authoring")
+            .popup
+            .clone()
+            .context("Hover did not open a control")?;
+        pointer(project, j, &event, false)?;
+        let again = project
+            .authoring
+            .lock()
+            .expect("authoring")
+            .popup
+            .clone()
+            .context("Hover popup disappeared")?;
+        ensure!(
+            j.same(&popup, &again.0)? && Arc::ptr_eq(&panel, &again.1),
+            "Same hover recreated popup"
+        );
+        let callback = panel
+            .on_message
+            .lock()
+            .expect("message")
+            .clone()
+            .expect("edit callback");
+        callback(
+            j,
+            &panel,
+            "ide.authoring.edit",
+            "{\"request\":0,\"value\":\"0,0,0,0\"}",
+        )?;
+        ensure!(
+            j.text(&document, "getText")? == aliases,
+            "Stale control changed source"
+        );
+        dismiss_control(project, j)?;
+        ensure!(
+            panel.on_message.lock().expect("message").is_none(),
+            "Closed popup retained document callback"
+        );
+        ensure!(
+            Arc::ptr_eq(&panel, &ensure_control(project, j)?),
+            "Renderer was replaced on dismissal"
+        );
+        pointer(project, j, &event, false)?;
+        ensure!(
+            project.authoring.lock().expect("authoring").popup.is_none(),
+            "Dismissed hover reopened before pointer left"
+        );
+        panel.close(j)?;
+        project.authoring.lock().expect("authoring").control = None;
         Ok(())
     })();
+    if result.is_err() && j.env.exception_check()? {
+        j.env.exception_describe()?;
+        j.env.exception_clear()?;
+    }
     unwatch_editor(project, j)?;
     clear_placed(project, j)?;
     j.void(

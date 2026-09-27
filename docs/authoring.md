@@ -36,7 +36,12 @@ get a document gutter action independent of the language plugin's PSI markers.
 
 The host parses selected documents off the IDE event thread, discards stale
 results and sends `cranpose.dev.values` to connected previews. This includes
-valid unsaved edits. Clicking a diamond opens a Cranpose control; Apply, Reset,
+valid unsaved edits. Hovering a live expression or its glyph opens a Cranpose
+control immediately, without taking keyboard focus. Clicking focuses it. One
+native control renderer is warmed per project and reused across popups. Escape
+and outside clicks dismiss the popup; remaining over the same target does not
+reopen it. Session IDs reject delayed edits from previously displayed values.
+Apply, Reset,
 numeric steps and boolean toggles use one undoable editor command. Stale controls
 refuse to overwrite newer source. Incomplete numeric input never replaces code.
 
@@ -47,17 +52,28 @@ numeric steps and Reset remain available together without overlapping hit target
 Numbers also have a seekbar with editable Min, Max and Step. A drag sends complete
 values immediately, with one Undo group per gesture; pending host edits are
 coalesced before the next editor command. Range settings belong to the open
-control. Integer ranges use exact representable values through ±(2^53−1), with
+control and reset when a different control opens. Integer ranges use exact representable values through ±(2^53−1), with
 explicit integer suffix bounds; larger integers retain exact text entry.
 
 `Color(r,g,b,a)` and `Color::rgba(r,g,b,a)` with four normalized float literals
 have one color swatch. This includes ordinary non-const palette functions.
 The Cranpose picker accepts hex and provides hue, saturation, brightness and
 opacity sliders. It replaces all four channels atomically; Reset restores their
-original values. Constants and named colors remain compiled. RGB/u8 constructors
+original values. Inline swatches show transparency over a checkerboard and animate
+between changed colors. Constants and unresolved named colors remain compiled. RGB/u8 constructors
 and computed channels are not grouped; eligible scalar arguments still have
 individual controls inside composables. Helper values take effect when
 the helper is called again.
+
+Immutable local variables, aliases, explicit struct fields, tuples and destructured
+bindings can point to an existing live initializer. Their declarations and uses
+get controls and color swatches, and the popup names the binding and initializer
+line. Editing one changes its initializer; the variable uses stay intact. The
+lexical resolver respects scopes, shadowing, function boundaries and Unicode.
+Mutable bindings, borrowed values, computed expressions, unknown imports,
+function returns and compiler-owned contexts are not guessed. This adds access
+to existing live slots; it does not make every runtime variable live or trace
+through arbitrary helper function calls.
 
 The hex label is a display value: opening the picker or applying it unchanged
 preserves the original float channels. Opacity edits preserve RGB, and HSV edits
@@ -98,10 +114,12 @@ Inlays reserve IDE space while a transparent Cranpose overlay draws diamonds,
 static shader underlines and stability badges. Document, viewport, folding,
 inlay and font events invalidate geometry. Unchanged geometry does no rendering
 work. Only visible decorations are sent, with a 256-item rendering budget;
-stability badges have priority. Source navigation adds a 700 ms shader sweep
+stability badges have priority. Source navigation adds a 900 ms spectral shader sweep
 following the destination line during scrolling. Button presses and slider
 thumbs have finite transitions; animation respects Cranpose's reduced-motion
-setting. Closing the native process detaches its overlays.
+setting. Live controls enter with a finite glass/prism transition. Closing the
+project shuts down its warmed renderer; dismissing a popup releases document
+callbacks and hides the surface. Closing the native process detaches its overlays.
 
 Run `authoring-smoke --binary /path/to/ui --log authoring.log --report authoring.json`
 to verify transparent shader output and zero settled frames over three seconds.

@@ -533,6 +533,11 @@ impl Panel {
     }
 }
 impl Surface {
+    /// A reused popup must never flash pixels from the preceding value.
+    pub(crate) fn clear_frame(&self, j: &mut J<'_>) -> Result<()> {
+        self.state.lock().expect("surface").image = None;
+        j.void(self.component(), "repaint", "()V", &[])
+    }
     #[cfg(feature = "ide-tests")]
     pub(crate) fn test_overlay_paint(j: &mut J<'_>) -> Result<()> {
         let options = crate::project::options(j, false)?;

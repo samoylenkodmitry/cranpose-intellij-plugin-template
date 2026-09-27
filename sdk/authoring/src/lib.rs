@@ -13,6 +13,7 @@ use syn::{
     visit_mut::{self, VisitMut},
 };
 
+mod references;
 pub mod runtime;
 mod source;
 pub mod transport;
@@ -61,6 +62,16 @@ pub struct Catalog {
     pub literals: Vec<Literal>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub formats: Vec<Format>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<Reference>,
+}
+/// A lexical name that leads to one already-live initializer. Editing this
+/// occurrence edits that initializer; it does not replace the variable use.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reference {
+    pub literal: usize,
+    pub name: String,
+    pub range: Range,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Format {
@@ -75,7 +86,8 @@ impl Catalog {
             source.len() <= MAX_SOURCE_BYTES,
             "Source exceeds live editing budget"
         );
-        let mut file = syn::parse_file(source)?;
+        let original = syn::parse_file(source)?;
+        let mut file = original.clone();
         let mut walk = Walk {
             source: SourceIndex::new(source),
             active: false,
@@ -103,12 +115,14 @@ impl Catalog {
             digest.update((line as u64).to_le_bytes());
         }
         let schema = format!("{:x}", digest.finalize());
+        let references = references::resolve(source, &original, &walk.literals);
         Ok(Self {
             schema,
             functions: walk.functions,
             calls: walk.calls,
             literals: walk.literals,
             formats: walk.formats,
+            references,
         })
     }
 

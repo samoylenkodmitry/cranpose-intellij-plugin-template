@@ -32,6 +32,7 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             .stdin(Stdio::null())
             .stdout(log.try_clone()?)
             .stderr(log);
+        let cold_started = Instant::now();
         let mut child = Process::spawn(command)?;
         let deadline = Instant::now() + Duration::from_secs(30);
         let stream = loop {
@@ -62,6 +63,7 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             &json!({"literal":{"kind":"string","value":"Original value"}}).to_string(),
         ))?;
         verify_text(&host, "Apply")?;
+        let cold_ready_ms = cold_started.elapsed().as_secs_f64() * 1000.0;
         pointer(&host, 70.0, 66.0)?;
         key(&host, "KeyA", select_all_modifier)?;
         host.send(Packet::new(8).int(0).text("Pointer edit"))?;
@@ -229,13 +231,33 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
         thread::sleep(Duration::from_secs(2));
         let idle = host.frames.load(std::sync::atomic::Ordering::Relaxed) - before;
         ensure!(idle == 0, "Settled color controls rendered {idle} frames");
+        let mut warm_ready_ms = Vec::new();
+        for request in 1..=5u64 {
+            resize(&host, scale, 400, 380)?;
+            let started = Instant::now();
+            host.send(Packet::new(13).int(0).byte(1))?;
+            host.send(Packet::message("ide.authoring.control", &json!({"request":request,"binding":format!("spacing{request}"),"literal":{"kind":"int","value":"41","range":{"line":7}}}).to_string()))?;
+            let view = verify_text(&host, &format!("spacing{request} · L7"))?;
+            warm_ready_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            ensure!(
+                text_node(&view, "0 → 100").is_some(),
+                "Reused control retained an old custom range"
+            );
+            click(&host, &view, "+")?;
+            let edit = expect_value(&host, "42")?;
+            ensure!(
+                edit["request"] == request,
+                "Reused control sent stale session identity"
+            );
+            host.send(Packet::new(13).int(0).byte(0))?;
+        }
         child.terminate(Duration::from_secs(2))?;
         ensure!(
             child.wait_for_tree_exit(Duration::from_secs(2))?,
             "Control descendants survived shutdown"
         );
         checks.push(
-            json!({"scale":scale,"applyWithSelectionMenu":true,"resetWithSelectionMenu":true,"typedControls":typed,"customRangeDrag":true,"colorDrag":true,"colorPrecision":true,"settledColorFrames":idle}),
+            json!({"scale":scale,"applyWithSelectionMenu":true,"resetWithSelectionMenu":true,"typedControls":typed,"customRangeDrag":true,"colorDrag":true,"colorPrecision":true,"settledColorFrames":idle,"coldProcessToControlCompositionMs":cold_ready_ms,"warmControlCompositionMs":warm_ready_ms,"reusedSessionIsolation":true}),
         );
     }
     Ok(json!({"pointerControls":checks}))
@@ -278,7 +300,10 @@ fn expect_value(host: &Host, expected: &str) -> Result<Value> {
                 payload["value"] == expected,
                 "Expected {expected:?}, got {payload}"
             );
-            host.send(Packet::message("ide.authoring.result", r#"{"ok":true}"#))?;
+            host.send(Packet::message(
+                "ide.authoring.result",
+                &json!({"ok":true,"request":payload["request"]}).to_string(),
+            ))?;
             return Ok(payload);
         }
     }
