@@ -38,6 +38,7 @@ pub struct Project {
     editor_key: Mutex<Option<(String, i64)>>,
     pub editor: Mutex<crate::editor::State>,
     pub authoring: Mutex<crate::authoring::State>,
+    pub feedback: Mutex<crate::feedback::State>,
 }
 impl Project {
     pub fn get(j: &mut J<'_>, object: &O) -> Result<Arc<Self>> {
@@ -64,6 +65,7 @@ impl Project {
             editor_key: Mutex::new(None),
             editor: Mutex::new(crate::editor::State::default()),
             authoring: Mutex::new(crate::authoring::State::default()),
+            feedback: Mutex::new(crate::feedback::State::default()),
         });
         registry.push(project.clone());
         drop(registry);
@@ -87,10 +89,13 @@ impl Project {
                 match op {
                     "Callback.dispose" => project.dispose(j)?,
                     "Callback.actionPerformed" => project.tick(j)?,
-                    "Callback.documentChanged"
-                    | "Callback.editorCreated"
-                    | "Callback.editorReleased"
-                    | "Callback.after" => project.stability.lock().expect("stability").schedule(),
+                    "Callback.documentChanged" => {
+                        project.stability.lock().expect("stability").schedule();
+                        crate::feedback::document_changed(&project, j, &args[0])?;
+                    }
+                    "Callback.editorCreated" | "Callback.editorReleased" | "Callback.after" => {
+                        project.stability.lock().expect("stability").schedule()
+                    }
                     "Callback.selectionChanged" => {
                         project.send_editor(j)?;
                         project.stability.lock().expect("stability").schedule();
@@ -215,6 +220,7 @@ impl Project {
         self.update_editor(j, false)?;
         crate::editor::fit_overlays(self, j)?;
         crate::authoring::tick(self, j)?;
+        crate::feedback::tick(self, j)?;
         if crate::features().stability {
             crate::stability::tick(self, j)?;
         }

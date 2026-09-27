@@ -14,6 +14,7 @@ pub type Lifecycle =
     dyn for<'a> Fn(&mut J<'a>, &Arc<Panel>, bool, &str) -> Result<()> + Send + Sync;
 pub type Pointer =
     dyn for<'a> Fn(&mut J<'a>, f64, f64, bool, bool, f64) -> Result<bool> + Send + Sync;
+pub type Presented = dyn for<'a> Fn(&mut J<'a>, &Arc<Panel>, u32) -> Result<()> + Send + Sync;
 pub struct Panel {
     pub primary: Arc<Surface>,
     scope: Scope,
@@ -22,6 +23,7 @@ pub struct Panel {
     pub on_message: Mutex<Option<Arc<Message>>>,
     pub on_lifecycle: Mutex<Option<Arc<Lifecycle>>>,
     pub on_pointer: Mutex<Option<Arc<Pointer>>>,
+    pub on_presented: Mutex<Option<Arc<Presented>>>,
 }
 struct PanelState {
     session: Option<Session>,
@@ -88,6 +90,7 @@ impl Panel {
             on_message: Mutex::new(None),
             on_lifecycle: Mutex::new(None),
             on_pointer: Mutex::new(None),
+            on_presented: Mutex::new(None),
         });
         panel.primary.initialize(j)?;
         let weak = Arc::downgrade(&panel);
@@ -219,6 +222,10 @@ impl Panel {
                         view.frame(j, &frame)?;
                     }
                     self.send(Packet::new(11).int(frame.surface).int(frame.id));
+                    let callback = self.on_presented.lock().expect("callback").clone();
+                    if let Some(callback) = callback {
+                        callback(j, self, frame.surface)?;
+                    }
                 }
                 SessionEvent::Data(Event::Message(channel, payload)) => {
                     let callback = self.on_message.lock().expect("callback").clone();
@@ -544,6 +551,16 @@ impl Surface {
         let panel = Panel::new(j, options)?;
         panel.overlay(j, 1, "editor")?;
         let surface = panel.overlay_surface(1).context("overlay")?;
+        anyhow::ensure!(
+            !j.call(
+                surface.component(),
+                "contains",
+                "(II)Z",
+                &[A::I(1), A::I(1)]
+            )?
+            .z()?,
+            "Overlay must pass pointer input through to the IDE"
+        );
         j.void(surface.component(), "setSize", "(II)V", &[A::I(4), A::I(4)])?;
         surface.frame(
             j,

@@ -83,15 +83,21 @@ pub fn run(options: Options) -> Result<()> {
     // An unattached primary must compose once to declare its host overlay.
     send(size(0, 1, 1))?;
     send(Packet::new(13).int(0).byte(1))?;
-    let surface = loop {
+    let (mut editor_surface, mut window_surface) = (None, None);
+    while editor_surface.is_none() || window_surface.is_none() {
         let event = receive
             .recv_timeout(Duration::from_secs(10))
             .context("Overlay declaration timed out")??;
         if let Event::Overlay(id, anchor) = event {
-            ensure!(anchor == "editor", "Editor anchor");
-            break id;
+            match anchor.as_str() {
+                "editor" => editor_surface = Some(id),
+                "window" => window_surface = Some(id),
+                _ => anyhow::bail!("Unexpected overlay anchor: {anchor}"),
+            }
         }
-    };
+    }
+    let surface = editor_surface.context("Editor anchor")?;
+    let lightning_surface = window_surface.context("Window anchor")?;
     send(size(surface, 640, 400))?;
     send(Packet::new(13).int(surface).byte(1))?;
     let geometry = json!({"items":[
@@ -170,6 +176,73 @@ pub fn run(options: Options) -> Result<()> {
         arrival_frames >= 3,
         "Source arrival shader did not animate: {arrival_frames} frames"
     );
+    let mut lightning = vec![];
+    for scale in [1u32, 2] {
+        send(
+            Packet::new(1)
+                .int(lightning_surface)
+                .int(640 * scale)
+                .int(300 * scale)
+                .float(scale as f32)
+                .float(60.0),
+        )?;
+        send(Packet::new(13).int(lightning_surface).byte(1))?;
+        send(Packet::message(
+            "ide.authoring.bolt",
+            &json!({"request":scale,"from":[40,80],"target":[520,170,92,24],"size":[640,300]})
+                .to_string(),
+        ))?;
+        let started = Instant::now();
+        let animation_cpu = crate::process_metrics::sample(&[child.id()])?[0];
+        let mut frames = 0;
+        let mut brightest = 0;
+        let mut target_pixels = 0;
+        let mut capture = crate::ui_probe::FrameCapture::default();
+        while started.elapsed() < Duration::from_millis(1500) {
+            if let Ok(event) = receive.recv_timeout(Duration::from_millis(50))
+                && let Event::Frame(mut frame) = event?
+                && frame.surface == lightning_surface
+            {
+                frames += 1;
+                frame.surface = 0;
+                capture.update(&frame);
+                let mut painted = 0;
+                let mut impact = 0;
+                for y in 0..300 * scale {
+                    for x in 0..640 * scale {
+                        let alpha = capture.pixel(x, y).map_or(0, |p| p.0[3]);
+                        if alpha > 30 {
+                            painted += 1;
+                        }
+                        if alpha > 30
+                            && (516 * scale..616 * scale).contains(&x)
+                            && (166 * scale..198 * scale).contains(&y)
+                        {
+                            impact += 1;
+                        }
+                    }
+                }
+                target_pixels = target_pixels.max(impact);
+                if painted > brightest {
+                    brightest = painted;
+                    capture.save(
+                        &options
+                            .log
+                            .with_file_name(format!("lightning-{scale}x.png")),
+                    )?;
+                }
+            }
+        }
+        ensure!(
+            frames >= 3 && brightest > 500 && target_pixels > 100,
+            "Lightning must animate across source and target at {scale}x: frames={frames} painted={brightest} target={target_pixels}"
+        );
+        let alpha_left = (0..300 * scale)
+            .any(|y| (0..640 * scale).any(|x| capture.pixel(x, y).is_some_and(|p| p.0[3] > 0)));
+        ensure!(!alpha_left, "Lightning must finish transparent at {scale}x");
+        let animation_cpu = crate::process_metrics::sample(&[child.id()])?[0] - animation_cpu;
+        lightning.push(json!({"scale":scale,"frames":frames,"paintedPixels":brightest,"impactPixels":target_pixels,"finishedTransparent":true,"cpuSeconds":animation_cpu,"observationSeconds":started.elapsed().as_secs_f64()}));
+    }
     // Wait for settling, then demand event-driven idle rendering.
     let settle = Instant::now() + Duration::from_secs(2);
     while Instant::now() < settle {
@@ -190,7 +263,7 @@ pub fn run(options: Options) -> Result<()> {
         idle_frames == 0,
         "Settled decorations emitted {idle_frames} frames"
     );
-    let mut report = json!({"result":"passed","paintedPixels":painted,"inlineColorAlpha":true,"arrivalFrames":arrival_frames,"idleFrames":idle_frames,
+    let mut report = json!({"result":"passed","paintedPixels":painted,"inlineColorAlpha":true,"arrivalFrames":arrival_frames,"lightning":lightning,"idleFrames":idle_frames,
         "idleSeconds":start.elapsed().as_secs_f64(),"idleCpuSeconds":cpu});
     let _ = writer
         .lock()
