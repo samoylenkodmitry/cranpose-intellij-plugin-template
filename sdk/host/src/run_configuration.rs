@@ -418,6 +418,80 @@ pub fn create_selected(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
     let Some(target) = target else {
         return Ok(());
     };
+    let (manager, settings) = new_settings(project, j, &target)?;
+    if j.static_call("com/intellij/execution/impl/RunDialog","editConfiguration","(Lcom/intellij/openapi/project/Project;Lcom/intellij/execution/RunnerAndConfigurationSettings;Ljava/lang/String;)Z",&[A::O(&project.object),A::O(&settings),A::S("Save Cranpose Configuration")])?.z()?{
+        select_settings(j, &manager, &settings)?;
+    }
+    Ok(())
+}
+
+/// Save the wizard's desktop target without another dialog. Repeated delivery
+/// reuses the existing configuration, including any user-edited run options.
+pub fn ensure_target(project: &Project, j: &mut J<'_>, target: &Target) -> Result<O> {
+    let manager = manager(project, j)?;
+    let all = j.obj(
+        &manager,
+        "getAllSettings",
+        "()[Lcom/intellij/execution/RunnerAndConfigurationSettings;",
+        &[],
+    )?;
+    for settings in j.elements(&all)? {
+        let configuration = j.obj(
+            &settings,
+            "getConfiguration",
+            "()Lcom/intellij/execution/configurations/RunConfiguration;",
+            &[],
+        )?;
+        if !j
+            .env
+            .is_instance_of(&configuration, "dev/cranpose/rust/RunConfiguration")?
+        {
+            continue;
+        }
+        let value = config(j, &configuration)?;
+        if value.manifest == target.manifest
+            && value.package == target.package_name
+            && value.target == target.name
+            && value.kind == target.kind
+            && value.command == "run"
+        {
+            j.void(
+                &manager,
+                "setSelectedConfiguration",
+                "(Lcom/intellij/execution/RunnerAndConfigurationSettings;)V",
+                &[A::O(&settings)],
+            )?;
+            return Ok(settings);
+        }
+    }
+    let (manager, settings) = new_settings(project, j, target)?;
+    select_settings(j, &manager, &settings)?;
+    Ok(settings)
+}
+
+fn manager(project: &Project, j: &mut J<'_>) -> Result<O> {
+    j.static_obj(
+        "com/intellij/execution/RunManager",
+        "getInstance",
+        "(Lcom/intellij/openapi/project/Project;)Lcom/intellij/execution/RunManager;",
+        &[A::O(&project.object)],
+    )
+}
+fn select_settings(j: &mut J<'_>, manager: &O, settings: &O) -> Result<()> {
+    j.void(
+        manager,
+        "addConfiguration",
+        "(Lcom/intellij/execution/RunnerAndConfigurationSettings;)V",
+        &[A::O(settings)],
+    )?;
+    j.void(
+        manager,
+        "setSelectedConfiguration",
+        "(Lcom/intellij/execution/RunnerAndConfigurationSettings;)V",
+        &[A::O(settings)],
+    )
+}
+fn new_settings(project: &Project, j: &mut J<'_>, target: &Target) -> Result<(O, O)> {
     let class = j.class("dev/cranpose/rust/ConfigurationType")?;
     let kind = j.static_obj(
         "com/intellij/execution/configurations/ConfigurationTypeUtil",
@@ -436,12 +510,7 @@ pub fn create_selected(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         .into_iter()
         .next()
         .context("Configuration factory")?;
-    let manager = j.static_obj(
-        "com/intellij/execution/RunManager",
-        "getInstance",
-        "(Lcom/intellij/openapi/project/Project;)Lcom/intellij/execution/RunManager;",
-        &[A::O(&project.object)],
-    )?;
+    let manager = manager(project, j)?;
     let settings=j.obj(&manager,"createConfiguration","(Ljava/lang/String;Lcom/intellij/execution/configurations/ConfigurationFactory;)Lcom/intellij/execution/RunnerAndConfigurationSettings;",&[A::S(&target.name),A::O(&factory)])?;
     let configuration = j.obj(
         &settings,
@@ -449,12 +518,8 @@ pub fn create_selected(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         "()Lcom/intellij/execution/configurations/RunConfiguration;",
         &[],
     )?;
-    store(j, &configuration, &Config::target(&target))?;
-    if j.static_call("com/intellij/execution/impl/RunDialog","editConfiguration","(Lcom/intellij/openapi/project/Project;Lcom/intellij/execution/RunnerAndConfigurationSettings;Ljava/lang/String;)Z",&[A::O(&project.object),A::O(&settings),A::S("Save Cranpose Configuration")])?.z()?{
-        j.void(&manager,"addConfiguration","(Lcom/intellij/execution/RunnerAndConfigurationSettings;)V",&[A::O(&settings)])?;
-        j.void(&manager,"setSelectedConfiguration","(Lcom/intellij/execution/RunnerAndConfigurationSettings;)V",&[A::O(&settings)])?;
-    }
-    Ok(())
+    store(j, &configuration, &Config::target(target))?;
+    Ok((manager, settings))
 }
 #[cfg(test)]
 mod tests {

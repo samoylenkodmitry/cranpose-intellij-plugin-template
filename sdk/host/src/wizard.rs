@@ -226,7 +226,6 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                     if !file.is_null() {
                         j.void(&file, "refresh", "(ZZ)V", &[A::Z(false), A::Z(true)])?;
                     }
-                    project.refresh(j)?;
                     let entry = ["src/main.rs", "src/lib.rs", "Cargo.toml"]
                         .into_iter()
                         .map(|s| root.join(s))
@@ -239,6 +238,10 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                         &[A::S(&entry.to_string_lossy())],
                     )?;
                     project::navigate(&project, j, &entry.to_string_lossy(), 0, 0)?;
+                    if crate::features().cargo {
+                        let target = prepare_desktop(&project, j, &root)?;
+                        crate::workspace::show(&project, j, &target.source, None, Some(&target))?;
+                    }
                     attach_cargo(&project, j, &fs, &root)?;
                     Ok(())
                 })?;
@@ -251,6 +254,19 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn prepare_desktop(
+    project: &Project,
+    j: &mut J<'_>,
+    root: &std::path::Path,
+) -> Result<crate::model::Target> {
+    let target = starter::desktop_target(root);
+    crate::run_configuration::ensure_target(project, j, &target)?;
+    // Metadata must not be a prerequisite: first-run machines may have no Rust,
+    // and dependency downloads can take minutes. The preview owns build progress.
+    project.initialize_starter(target.clone(), root);
+    Ok(target)
 }
 
 // Ask the installed Rust plugin to discover the newly generated manifest. Using
@@ -358,5 +374,66 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         "License and IDE metadata"
     );
     anyhow::ensure!(!root.join(".git").exists(), "No template history");
+    if crate::features().cargo {
+        let saved = project.snapshot.lock().expect("snapshot").clone();
+        let target = prepare_desktop(project, j, &root)?;
+        let settings = crate::run_configuration::ensure_target(project, j, &target)?;
+        let configuration = j.obj(
+            &settings,
+            "getConfiguration",
+            "()Lcom/intellij/execution/configurations/RunConfiguration;",
+            &[],
+        )?;
+        let mut value = crate::run_configuration::config(j, &configuration)?;
+        value.validate()?;
+        anyhow::ensure!(
+            value.target == "cranpose-showcase" && value.features == "desktop",
+            "Desktop run target"
+        );
+        anyhow::ensure!(
+            !j.bool(&settings, "isTemporary")?,
+            "Wizard configuration must persist"
+        );
+        value.arguments = "user argument".into();
+        crate::run_configuration::store(j, &configuration, &value)?;
+        prepare_desktop(project, j, &root)?;
+        let again = crate::run_configuration::ensure_target(project, j, &target)?;
+        anyhow::ensure!(
+            j.same(&settings, &again)?,
+            "Wizard must not duplicate configurations"
+        );
+        anyhow::ensure!(
+            crate::run_configuration::config(j, &configuration)?.arguments == "user argument",
+            "Preserve customized configuration"
+        );
+        let manager = j.static_obj(
+            "com/intellij/execution/RunManager",
+            "getInstance",
+            "(Lcom/intellij/openapi/project/Project;)Lcom/intellij/execution/RunManager;",
+            &[A::O(&project.object)],
+        )?;
+        let selected = j.obj(
+            &manager,
+            "getSelectedConfiguration",
+            "()Lcom/intellij/execution/RunnerAndConfigurationSettings;",
+            &[],
+        )?;
+        anyhow::ensure!(
+            j.same(&settings, &selected)?,
+            "Select the saved run configuration"
+        );
+        let snapshot = project.snapshot.lock().expect("snapshot").clone();
+        anyhow::ensure!(
+            snapshot.targets.len() == 1 && snapshot.selected == target.id && !snapshot.busy,
+            "Ready target without metadata or compilation"
+        );
+        j.void(
+            &manager,
+            "removeConfiguration",
+            "(Lcom/intellij/execution/RunnerAndConfigurationSettings;)V",
+            &[A::O(&settings)],
+        )?;
+        *project.snapshot.lock().expect("snapshot") = saved;
+    }
     Ok(())
 }

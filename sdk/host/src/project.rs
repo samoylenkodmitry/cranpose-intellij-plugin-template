@@ -1,7 +1,7 @@
 //! IntelliJ project services, authored in Rust.
 use crate::{
     jvm::{self, A, J, O, Scope},
-    model::{self, Snapshot},
+    model::{self, Snapshot, Target},
     session::Options,
     surface::Panel,
 };
@@ -247,6 +247,19 @@ impl Project {
         for panel in self.live_panels() {
             panel.message("cranpose.project", &json);
         }
+    }
+    pub fn initialize_starter(&self, target: Target, root: &Path) {
+        // A late discovery result from the initially empty directory must not
+        // erase the wizard's known target. Later manual refreshes work normally.
+        self.metadata.lock().expect("metadata").take();
+        *self.snapshot.lock().expect("snapshot") = Snapshot {
+            status: "Showcase ready · the first build downloads Rust dependencies".into(),
+            root: root.to_string_lossy().into_owned(),
+            selected: target.id.clone(),
+            targets: vec![target],
+            ..Default::default()
+        };
+        self.publish();
     }
     pub fn trusted(&self, j: &mut J<'_>) -> Result<bool> {
         let trusted = j

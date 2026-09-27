@@ -114,12 +114,41 @@ pub fn s(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
 }
 pub fn cargo() -> PathBuf {
+    cargo_path().unwrap_or_else(|| PathBuf::from(cargo_name()))
+}
+fn cargo_name() -> &'static str {
+    if cfg!(windows) { "cargo.exe" } else { "cargo" }
+}
+pub fn cargo_path() -> Option<PathBuf> {
     let home =
         std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
-    let name = if cfg!(windows) { "cargo.exe" } else { "cargo" };
-    home.map(|p| p.join(".cargo/bin").join(name))
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| PathBuf::from(name))
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.map(|p| p.join(".cargo")));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    find_cargo(cargo_home.as_deref(), &path)
+}
+fn find_cargo(cargo_home: Option<&Path>, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    cargo_home
+        .map(|p| p.join("bin"))
+        .into_iter()
+        .chain(std::env::split_paths(path).filter(|p| !p.as_os_str().is_empty()))
+        .map(|p| p.join(cargo_name()))
+        .find(|p| {
+            if !p.is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                p.metadata()
+                    .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
 }
 pub fn arguments(task: &str, target: &Target) -> Vec<String> {
     let mut args = vec![
@@ -198,6 +227,26 @@ pub fn starter_manifest(name: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cargo_discovery_supports_fresh_install_and_custom_home_without_path() {
+        let temp = tempfile::tempdir().expect("temp");
+        let home = temp.path().join("Rust tools 🦀");
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let path = std::ffi::OsStr::new("");
+        assert!(find_cargo(Some(&home), path).is_none());
+        let cargo = bin.join(cargo_name());
+        std::fs::write(&cargo, "test executable").expect("file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert!(find_cargo(Some(&home), path).is_none());
+            std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        }
+        assert_eq!(find_cargo(Some(&home), path), Some(cargo.clone()));
+        let path = std::env::join_paths([&bin]).expect("path");
+        assert_eq!(find_cargo(None, &path), Some(cargo));
+    }
     #[test]
     fn starter_rejects_injected_manifest() {
         assert!(starter_manifest("app\"\n[evil]").is_err());

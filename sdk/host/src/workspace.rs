@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    path::Path,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -295,6 +296,7 @@ impl Workspace {
                 0,
             )?,
             "configure" => crate::run_configuration::create_selected(&self.project, j)?,
+            "setupRust" => rust_setup(j)?,
             "export" => self.export(j)?,
             _ => {}
         }
@@ -310,6 +312,13 @@ impl Workspace {
             );
             return Ok(());
         }
+        let Some(cargo) = model::cargo_path() else {
+            self.event(id, "stopped", json!({
+                "setup":"rust",
+                "message":"Install Rust to build your preview, then choose Retry preview. Your project and run configuration are ready."
+            }));
+            return Ok(());
+        };
         let mut options = request["options"].clone();
         let valid = {
             let snapshot = self.project.snapshot.lock().expect("snapshot");
@@ -335,6 +344,22 @@ impl Workspace {
         }
         let preview = model::s(request, "preview");
         let binary = project::binary(j)?;
+        let mut environment = BTreeMap::new();
+        // A freshly installed rustup may not be on the already-running IDE's
+        // PATH. The private runner and its compiler must see the same Cargo.
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let paths = cargo
+            .parent()
+            .into_iter()
+            .map(Path::to_path_buf)
+            .chain(std::env::split_paths(&path));
+        environment.insert(
+            "PATH".into(),
+            std::env::join_paths(paths)?.to_string_lossy().into_owned(),
+        );
+        if !preview.is_empty() {
+            environment.insert("CRANPOSE_PREVIEW".into(), preview);
+        }
         let panel = Panel::new(
             j,
             Options {
@@ -344,11 +369,7 @@ impl Workspace {
                     options.to_string(),
                 ],
                 directory: Some(self.project.root.clone()),
-                environment: if preview.is_empty() {
-                    BTreeMap::new()
-                } else {
-                    BTreeMap::from([("CRANPOSE_PREVIEW".into(), preview)])
-                },
+                environment,
                 timeout: Duration::from_secs(1200),
             },
         )?;
@@ -951,6 +972,15 @@ pub fn docs(j: &mut J<'_>) -> Result<()> {
         "browse",
         "(Ljava/lang/String;)V",
         &[A::S("https://docs.rs/cranpose/latest/cranpose/")],
+    )
+}
+
+fn rust_setup(j: &mut J<'_>) -> Result<()> {
+    j.static_void(
+        "com/intellij/ide/BrowserUtil",
+        "browse",
+        "(Ljava/lang/String;)V",
+        &[A::S("https://rust-lang.org/tools/install/")],
     )
 }
 
