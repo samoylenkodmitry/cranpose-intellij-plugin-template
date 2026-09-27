@@ -49,6 +49,15 @@ pub struct Options {
     /// Seconds per idle phase: visible, inspecting every 500 ms, and hidden.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=120))]
     pub idle_seconds: u32,
+    /// Seconds to settle after each visibility change, outside the idle measurement.
+    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u32).range(0..=30))]
+    pub idle_settle_seconds: u32,
+    /// Record runner preparation phases and host connection/snapshot startup timing.
+    #[arg(long)]
+    pub profile_startup: bool,
+    /// Fail unless the runner restored a private dependency lockfile.
+    #[arg(long, requires = "profile_startup")]
+    pub require_cached_dependencies: bool,
     /// Include Cargo fingerprint/rebuild reasons in the compiler log.
     #[arg(long)]
     pub build_diagnostics: bool,
@@ -247,6 +256,9 @@ pub fn run(options: Options) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
+    if options.profile_startup {
+        command.env("CRANPOSE_PROFILE_STARTUP", "1");
+    }
     if options.build_diagnostics {
         command.env("CARGO_LOG", "cargo::core::compiler::fingerprint=info");
     }
@@ -279,6 +291,7 @@ pub fn run(options: Options) -> Result<()> {
         );
         thread::sleep(Duration::from_millis(100));
     };
+    let connected_ms = started.elapsed().as_secs_f64() * 1000.0;
     let mut host = Host::new(stream, &token)?;
     let snapshot = host.snapshot(&["Count: 0", "Increment"], 30)?;
     let startup_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -287,6 +300,21 @@ pub fn run(options: Options) -> Result<()> {
     let build_log = fs::read_to_string(&options.log)?;
     let support_builds = support_builds(&build_log);
     let cargo_build_ms = cargo_build_ms(&build_log);
+    let startup_phases = if options.profile_startup {
+        let mut phases = startup_evidence(&build_log);
+        phases["spawnToConnectionMs"] = json!(connected_ms);
+        phases["connectionToSnapshotMs"] = json!(startup_ms - connected_ms);
+        phases["connectionPollMs"] = json!(100);
+        phases
+    } else {
+        Value::Null
+    };
+    if options.require_cached_dependencies {
+        ensure!(
+            startup_phases["dependencyCacheHit"] == true,
+            "Private dependency cache was missed or reuse evidence is missing"
+        );
+    }
     if options.require_cached_support {
         ensure!(
             support_builds.len() == 2 && support_builds.iter().all(|build| build["fresh"] == true),
@@ -294,14 +322,19 @@ pub fn run(options: Options) -> Result<()> {
         );
     }
     let idle = if options.idle_seconds > 0 {
-        profile_idle(&mut host, &pids, options.idle_seconds)?
+        profile_idle(
+            &mut host,
+            &pids,
+            options.idle_seconds,
+            options.idle_settle_seconds,
+        )?
     } else {
         Vec::new()
     };
     if options.startup_only {
         let shutdown_ms = stop_preview(&mut cleanup.child, &pids)?;
         let result = json!({"result":"passed", "mode":"startup", "startupMs":startup_ms,
-            "idle":idle, "shutdownMs":shutdown_ms, "stoppedPids":pids, "snapshotPollMs":200, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms});
+            "idle":idle, "shutdownMs":shutdown_ms, "stoppedPids":pids, "snapshotPollMs":200, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
         write_report(options.report, &result)?;
         return Ok(());
     }
@@ -402,8 +435,39 @@ pub fn run(options: Options) -> Result<()> {
     let shutdown_ms = stop_preview(&mut cleanup.child, &pids)?;
     let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change",
         "startupMs":startup_ms, "backgroundNoiseMs":options.background_noise_ms,
-        "snapshotPollMs":200, "patches":timings, "shutdownMs":shutdown_ms, "stoppedPids":pids, "idle":idle, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms});
+        "snapshotPollMs":200, "patches":timings, "shutdownMs":shutdown_ms, "stoppedPids":pids, "idle":idle, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
     write_report(options.report, &result)
+}
+// Dioxus timestamps start with the compiler process; host timings start with
+// the runner spawn. Keep their clock origins explicit instead of subtracting them.
+fn startup_evidence(log: &str) -> Value {
+    let events: Vec<Value> = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect();
+    let runner: Vec<_> = events
+        .iter()
+        .filter(|event| event["cranposeDev"] == "startupPhase")
+        .collect();
+    let cache_hit = events
+        .iter()
+        .find(|event| event["cranposeDev"] == "dependencyCache")
+        .and_then(|event| event["hit"].as_bool());
+    let timestamp = |message: &str| {
+        events.iter().find_map(|event| {
+            event["message"].as_str()?.contains(message).then_some(())?;
+            let seconds = event["timestamp"]
+                .as_str()?
+                .trim()
+                .strip_suffix('s')?
+                .parse::<f64>()
+                .ok()?;
+            (seconds.is_finite() && seconds >= 0.0).then_some(seconds * 1000.0)
+        })
+    };
+    json!({"runner":runner, "dependencyCacheHit":cache_hit,
+        "compilerServingMs":timestamp("Serving your app:"),
+        "compilerBuildCompletedMs":timestamp("Build completed successfully")})
 }
 fn cargo_build_ms(log: &str) -> Option<f64> {
     log.lines().find_map(|line| {
@@ -486,12 +550,17 @@ fn stop_preview(child: &mut process::Process, pids: &[u32; 3]) -> Result<f64> {
     }
     Ok(stopped.elapsed().as_secs_f64() * 1000.0)
 }
-fn profile_idle(host: &mut Host, pids: &[u32; 3], seconds: u32) -> Result<Vec<Value>> {
+fn profile_idle(
+    host: &mut Host,
+    pids: &[u32; 3],
+    seconds: u32,
+    settle_seconds: u32,
+) -> Result<Vec<Value>> {
     let mut result = Vec::new();
     for mode in ["visible", "inspecting", "hidden"] {
         host.send(Packet::new(13).int(0).byte(u8::from(mode != "hidden")))?;
         // Let visibility and the initial frame settle outside the measured window.
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_secs(u64::from(settle_seconds)));
         while host.messages.try_recv().is_ok() {}
         let before = super::process_metrics::sample(pids)?;
         let frames = host.frames.load(Ordering::Relaxed);
@@ -518,7 +587,7 @@ fn profile_idle(host: &mut Host, pids: &[u32; 3], seconds: u32) -> Result<Vec<Va
             let cpu = (after[index] - before[index]).max(0.0);
             json!({"role":role,"pid":pids[index],"cpuSeconds":cpu,"percentOfOneCore":100.0*cpu/elapsed})
         }).collect();
-        result.push(json!({"mode":mode,"seconds":elapsed,"processes":processes,
+        result.push(json!({"mode":mode,"seconds":elapsed,"settleSeconds":settle_seconds,"processes":processes,
             "frames":host.frames.load(Ordering::Relaxed)-frames,"inspectorRequests":requests,
             "cpuClockResolutionSeconds":super::process_metrics::RESOLUTION}));
     }
@@ -613,6 +682,33 @@ impl Drop for Noise {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_evidence_tolerates_noise_and_does_not_invent_missing_data() {
+        let log = [
+            "unstructured compiler output".to_owned(),
+            json!({"cranposeDev":"startupPhase","phase":"metadata","durationMs":42}).to_string(),
+            json!({"cranposeDev":"dependencyCache","hit":true}).to_string(),
+            json!({"timestamp":"  0.40s","message":"Serving your app: counter"}).to_string(),
+            json!({"timestamp":"  3.22s","message":"Build completed successfully in 2.82s"})
+                .to_string(),
+        ]
+        .join("\n");
+        let phases = startup_evidence(&log);
+        assert_eq!(phases["runner"].as_array().expect("phases").len(), 1);
+        assert_eq!(phases["dependencyCacheHit"], true);
+        assert_eq!(phases["compilerServingMs"], 400.0);
+        assert_eq!(phases["compilerBuildCompletedMs"], 3220.0);
+        for log in [
+            "",
+            r#"{"cranposeDev":"dependencyCache","hit":"true"}"#,
+            r#"{"timestamp":"NaNs","message":"Serving your app:"}"#,
+            r#"{"timestamp":"-1s","message":"Serving your app:"}"#,
+        ] {
+            let phases = startup_evidence(log);
+            assert!(phases["dependencyCacheHit"].is_null());
+            assert!(phases["compilerServingMs"].is_null());
+        }
+    }
     #[test]
     fn cargo_reported_timing_is_optional_and_handles_minutes() {
         assert_eq!(
