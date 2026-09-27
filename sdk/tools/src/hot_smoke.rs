@@ -625,7 +625,9 @@ mod tests {
         );
         // Cargo colors the status word when CI forces terminal colors.
         assert_eq!(
-            cargo_build_ms("\x1b[1m\x1b[92m    Finished\x1b[0m `desktop-dev` profile [unoptimized + debuginfo] target(s) in 3.52s"),
+            cargo_build_ms(
+                "\x1b[1m\x1b[92m    Finished\x1b[0m `desktop-dev` profile [unoptimized + debuginfo] target(s) in 3.52s"
+            ),
             Some(3520.0)
         );
         assert_eq!(cargo_build_ms("unrelated log output"), None);
