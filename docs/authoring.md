@@ -19,10 +19,14 @@ Applications offering the Showcase starter register both
 The two adapters cover RustRover and IDEA's project wizards. The template leaves
 these extension registrations to the consuming plugin.
 
-The starter fetches a pinned commit of `samoylenkodmitry/cranpose-showcase`, with
-cancellation and a 90-second timeout per Git operation. It stages the files before
-copying them into an empty project directory, allows IDE metadata, rejects
-symlinks and existing application files, and never runs template scripts. Wizard
+The starter embeds a pinned source archive of `samoylenkodmitry/cranpose-showcase`.
+Creating a project works offline without Git or other external tools. Rust and
+Cargo dependencies are needed later to build and run it. The archive's provenance,
+license and checksum are recorded in `sdk/host/assets/README.md`.
+Generation verifies the checksum and stages the files before copying them into
+an empty project directory. It supports cancellation, retains executable script
+permissions, allows IDE metadata, rejects links and existing application files,
+and never runs template scripts. Wizard
 close disposes its native surface. Project creation attaches Cargo and opens
 `src/main.rs` when the files become available.
 

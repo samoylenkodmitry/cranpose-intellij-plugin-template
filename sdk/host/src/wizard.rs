@@ -182,16 +182,10 @@ fn generate(project: &Arc<Project>, j: &mut J<'_>, root: PathBuf) -> Result<()> 
     project.snapshot.lock().expect("snapshot").status = "Creating Cranpose showcase…".into();
     project.publish();
     std::thread::spawn(move || {
-        let result = starter::generate(
-            &root,
-            &cache,
-            starter::SHOWCASE_REPOSITORY,
-            starter::SHOWCASE_REVISION,
-            || {
-                weak.upgrade()
-                    .is_none_or(|p| p.closed.load(Ordering::Acquire))
-            },
-        )
+        let result = starter::generate(&root, &cache, || {
+            weak.upgrade()
+                .is_none_or(|p| p.closed.load(Ordering::Acquire))
+        })
         .map(|()| root);
         let _ = sender.send(result.map_err(|e| format!("{e:#}")));
     });
@@ -304,7 +298,7 @@ fn attach_cargo(project: &Project, j: &mut J<'_>, fs: &O, root: &std::path::Path
 }
 
 #[cfg(feature = "ide-tests")]
-pub fn integration_test(j: &mut J<'_>) -> Result<()> {
+pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
     let generator = j.new("dev/cranpose/rust/ShowcaseGenerator", "()V", &[])?;
     anyhow::ensure!(
         j.text(&generator, "getName")? == "Cranpose",
@@ -338,5 +332,31 @@ pub fn integration_test(j: &mut J<'_>) -> Result<()> {
         .is_null(),
         "IDEA module type"
     );
+    // Exercise the real wizard's asynchronous worker as well as its entry/card.
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("Offline showcase 🦀");
+    std::fs::create_dir_all(root.join(".idea"))?;
+    generate(project, j, root.clone())?;
+    let receiver = project
+        .authoring
+        .lock()
+        .expect("authoring")
+        .generation
+        .take()
+        .context("Wizard worker")?;
+    let generated = receiver
+        .recv_timeout(std::time::Duration::from_secs(15))?
+        .map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(generated == root, "Wizard destination");
+    anyhow::ensure!(
+        root.join("src/main.rs").is_file(),
+        "Wizard application entry"
+    );
+    anyhow::ensure!(root.join("assets/app-icon.png").is_file(), "Wizard assets");
+    anyhow::ensure!(
+        root.join("LICENSE").is_file() && root.join(".idea").is_dir(),
+        "License and IDE metadata"
+    );
+    anyhow::ensure!(!root.join(".git").exists(), "No template history");
     Ok(())
 }

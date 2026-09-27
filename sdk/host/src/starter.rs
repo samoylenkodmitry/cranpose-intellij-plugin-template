@@ -1,8 +1,15 @@
-//! Staged, cancellable generation from a pinned Git template.
+//! Offline, staged generation from the pinned Showcase bundled with the plugin.
 use anyhow::{Context, Result, ensure};
-use std::{fs, io::Write, path::Path, process::Command, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    io::{Cursor, Write},
+    path::{Component, Path},
+};
 pub const SHOWCASE_REPOSITORY: &str = "https://github.com/samoylenkodmitry/cranpose-showcase";
 pub const SHOWCASE_REVISION: &str = "dc439faf9fd019191ccbf1c6fa70f2c523ae1163";
+const SHOWCASE_ARCHIVE: &[u8] = include_bytes!("../assets/showcase.zip");
+const SHOWCASE_SHA256: &str = "6fd9c29bd04d83e1e3b9309809cf279d1d23452e7336d506eedaba1a385bc60e";
 
 pub fn validate_destination(root: &Path) -> Result<()> {
     if !root.exists() {
@@ -21,53 +28,95 @@ pub fn validate_destination(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Fetch before installing any project files. Never runs template scripts.
-pub fn generate(
-    root: &Path,
-    cache: &Path,
-    repository: &str,
-    revision: &str,
-    cancel: impl Fn() -> bool,
-) -> Result<()> {
+/// Requires neither external executables nor network access. Never runs template scripts.
+pub fn generate(root: &Path, cache: &Path, cancel: impl Fn() -> bool) -> Result<()> {
     validate_destination(root)?;
+    ensure!(!cancel(), "Project generation cancelled");
+    ensure!(
+        format!("{:x}", Sha256::digest(SHOWCASE_ARCHIVE)) == SHOWCASE_SHA256,
+        "Bundled Cranpose starter is corrupt; reinstall the plugin"
+    );
     fs::create_dir_all(cache)?;
     let stage = tempfile::Builder::new()
         .prefix("cranpose-starter-")
         .tempdir_in(cache)?;
-    for args in [
-        vec!["init", "--quiet"],
-        vec!["fetch", "--quiet", "--depth", "1", repository, revision],
-        vec![
-            "-c",
-            "advice.detachedHead=false",
-            "checkout",
-            "--quiet",
-            "--detach",
-            "FETCH_HEAD",
-        ],
-    ] {
-        ensure!(!cancel(), "Project generation cancelled");
-        let mut command = Command::new("git");
-        command
-            .args(args)
-            .current_dir(stage.path())
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_LFS_SKIP_SMUDGE", "1");
-        let output =
-            cranpose_plugin_process::capture(command, None, Duration::from_secs(90), &cancel)
-                .context("Fetch Cranpose starter with Git")?;
-        ensure!(
-            output.status.success(),
-            "Git could not prepare starter: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    unpack(SHOWCASE_ARCHIVE, stage.path(), &cancel).context("Unpack bundled Cranpose starter")?;
     ensure!(
         stage.path().join("Cargo.toml").is_file() && stage.path().join("src").is_dir(),
         "Starter has no Cargo application"
     );
-    fs::remove_dir_all(stage.path().join(".git"))?;
     install(stage.path(), root, &cancel)?;
+    Ok(())
+}
+
+fn unpack(bytes: &[u8], destination: &Path, cancel: &impl Fn() -> bool) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+    ensure!(archive.len() <= 2048, "Starter contains too many entries");
+    let prefix = format!("cranpose-showcase-{SHOWCASE_REVISION}/");
+    let mut total = 0_u64;
+    for index in 0..archive.len() {
+        ensure!(!cancel(), "Project generation cancelled");
+        let mut entry = archive.by_index(index)?;
+        let name = entry
+            .name()
+            .strip_prefix(&prefix)
+            .context("Unexpected starter root")?;
+        if name.is_empty() && entry.is_dir() {
+            continue;
+        }
+        // Check portable names on every host, including Windows drive/UNC syntax.
+        ensure!(
+            !name.is_empty()
+                && !name.contains(['\\', ':'])
+                && name
+                    .split('/')
+                    .filter(|part| !part.is_empty())
+                    .all(|part| part != "." && part != "..")
+                && Path::new(name)
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_))),
+            "Invalid starter path: {name}"
+        );
+        let mode = entry.unix_mode().unwrap_or(0);
+        let kind = mode & 0o170000;
+        ensure!(
+            matches!(kind, 0 | 0o100000 | 0o040000),
+            "Starter contains a link or special file"
+        );
+        ensure!(
+            name.split('/').next() != Some(".git"),
+            "Starter contains Git metadata"
+        );
+        ensure!(
+            entry.size() <= 16 * 1024 * 1024,
+            "Starter file is too large"
+        );
+        total = total
+            .checked_add(entry.size())
+            .context("Starter size overflow")?;
+        ensure!(total <= 64 * 1024 * 1024, "Starter is too large");
+        let target = destination.join(name);
+        if entry.is_dir() {
+            fs::create_dir_all(&target)?;
+        } else {
+            fs::create_dir_all(target.parent().context("Starter parent")?)?;
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            // Reading to EOF also verifies the ZIP CRC before anything is installed.
+            std::io::copy(&mut entry, &mut output)?;
+            output.flush()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(
+                    &target,
+                    fs::Permissions::from_mode(if mode & 0o111 != 0 { 0o755 } else { 0o644 }),
+                )?;
+            }
+        }
+    }
     Ok(())
 }
 fn install(source: &Path, destination: &Path, cancel: &impl Fn() -> bool) -> Result<()> {
@@ -124,6 +173,134 @@ fn install(source: &Path, destination: &Path, cancel: &impl Fn() -> bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bundled_starter_without_external_tools() {
+        // A child isolates PATH from other concurrently running process tests.
+        if std::env::var_os("CRANPOSE_STARTER_TEST_CHILD").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "starter::tests::bundled_starter_without_external_tools",
+                    "--nocapture",
+                ])
+                .env("CRANPOSE_STARTER_TEST_CHILD", "1")
+                .env("PATH", "")
+                .env("HTTP_PROXY", "http://127.0.0.1:1")
+                .env("HTTPS_PROXY", "http://127.0.0.1:1")
+                .output()
+                .expect("child");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().join("My project 🦀");
+        let cache = temp.path().join("cache");
+        fs::create_dir_all(root.join(".idea")).expect("IDE metadata");
+        fs::write(root.join(".idea/keep.xml"), "existing").expect("metadata");
+        generate(&root, &cache, || false).expect("offline generation");
+        let mut archive = zip::ZipArchive::new(Cursor::new(SHOWCASE_ARCHIVE)).expect("bundle");
+        let prefix = format!("cranpose-showcase-{SHOWCASE_REVISION}/");
+        let mut files = 0;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).expect("entry");
+            if entry.is_dir() {
+                continue;
+            }
+            let target = root.join(entry.name().strip_prefix(&prefix).expect("prefix"));
+            let mut expected = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut expected).expect("read");
+            assert_eq!(
+                fs::read(&target).expect("generated file"),
+                expected,
+                "{}",
+                target.display()
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&target).expect("mode").permissions().mode() & 0o111,
+                    entry.unix_mode().unwrap_or(0) & 0o111
+                );
+            }
+            files += 1;
+        }
+        assert_eq!(files, 66);
+        assert_eq!(
+            fs::read_to_string(root.join(".idea/keep.xml")).expect("metadata"),
+            "existing"
+        );
+        assert!(!root.join(".git").exists());
+        assert_eq!(fs::read_dir(&cache).expect("cache").count(), 0);
+        assert!(
+            generate(&root, &cache, || false).is_err(),
+            "must not overwrite a project"
+        );
+    }
+
+    #[test]
+    fn cancelled_unpack_never_touches_project() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().join("project");
+        let cache = temp.path().join("cache");
+        let count = std::cell::Cell::new(0);
+        assert!(
+            generate(&root, &cache, || {
+                count.set(count.get() + 1);
+                count.get() > 10
+            })
+            .is_err()
+        );
+        assert!(!root.exists());
+        assert_eq!(fs::read_dir(cache).expect("cache").count(), 0);
+    }
+
+    #[test]
+    fn archive_rejects_escape_links_and_file_directory_collisions() {
+        for names in [
+            vec!["../escape"],
+            vec!["/absolute"],
+            vec!["C:/drive"],
+            vec!["a\\..\\escape"],
+            vec![".git/config"],
+            vec!["same", "same/child"],
+        ] {
+            let temp = tempfile::tempdir().expect("temp");
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            for name in names {
+                zip.start_file(
+                    format!("cranpose-showcase-{SHOWCASE_REVISION}/{name}"),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .expect("entry");
+                zip.write_all(b"data").expect("data");
+            }
+            let bytes = zip.finish().expect("finish").into_inner();
+            assert!(unpack(&bytes, temp.path(), &|| false).is_err());
+        }
+        let temp = tempfile::tempdir().expect("temp");
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.add_symlink(
+            format!("cranpose-showcase-{SHOWCASE_REVISION}/link"),
+            "../outside",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("link");
+        assert!(
+            unpack(
+                &zip.finish().expect("finish").into_inner(),
+                temp.path(),
+                &|| false
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn refuses_existing_code_and_preserves_ide_metadata() {
         let temp = tempfile::tempdir().expect("temp");

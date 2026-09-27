@@ -450,7 +450,7 @@ pub fn ShowcaseCard() {
                 style(c.accent, 12.0),
             );
             Text(
-                "Creates a copy of samoylenkodmitry/cranpose-showcase.\nChoose your project name and location above. Git and an internet connection are required.",
+                "Showcase is included — create your project offline.\nChoose a name and location above. Rust and downloaded dependencies are needed to build and run.",
                 Modifier::empty().fill_max_width(),
                 style(c.muted, 12.0),
             );
