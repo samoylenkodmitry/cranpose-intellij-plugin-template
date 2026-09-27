@@ -16,6 +16,7 @@ mod source;
 mod stability;
 pub mod starter;
 mod surface;
+mod wake;
 mod watcher;
 mod wizard;
 mod workspace;

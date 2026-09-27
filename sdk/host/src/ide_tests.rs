@@ -25,6 +25,10 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                     "project lifecycle",
                     services as fn(&mut J<'_>) -> Result<()>,
                 ),
+                (
+                    "coalesced worker delivery and disposal",
+                    crate::wake::integration_test,
+                ),
                 ("native surface pixels and disposal", surface),
                 (
                     "transparent editor overlay preserves source",
