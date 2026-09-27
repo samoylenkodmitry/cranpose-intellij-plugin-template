@@ -40,6 +40,9 @@ pub struct Options {
     /// Additional alternating edits, with save-to-ack and save-to-snapshot timings.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=100))]
     pub measure_rounds: u32,
+    /// Send unsaved literal changes through the IDE channel before saved edits.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=100))]
+    pub live_values_rounds: u32,
     /// Simulate ignored build output during each measured edit (fixture only).
     #[arg(long, default_value_t = 0, requires = "fixture")]
     pub background_noise_ms: u64,
@@ -489,6 +492,41 @@ pub fn run(mut options: Options) -> Result<()> {
         host.click(x, y)?;
         host.snapshot(&[&format!("Count: {count}")], 10)?;
     }
+    let mut live_timings = Vec::new();
+    for round in 0..options.live_values_rounds {
+        let label = if round.is_multiple_of(2) {
+            "Unsaved live value"
+        } else {
+            "Tune"
+        };
+        let source = cleanup
+            .original
+            .replace("\"Increment\"", &format!("\"{label}\""));
+        let previous_generation = host.runtime["generation"].as_u64().unwrap_or(0);
+        let payload = live_values(&source, &options.source)?;
+        let sent = Instant::now();
+        host.send(Packet::message("cranpose.dev.values", &payload))?;
+        host.snapshot_after(&["Count: 3", label], 10, Some(previous_generation))?;
+        let observed = Instant::now();
+        let applied = host.applied_at.context("Live value acknowledgement")?;
+        ensure!(host.runtime["pid"] == pid, "Live value restarted preview");
+        ensure!(
+            fs::read_to_string(&cleanup.source)? == cleanup.original,
+            "Live value modified disk source"
+        );
+        live_timings.push(
+            json!({"round":round,"sendToAppliedMs":(applied-sent).as_secs_f64()*1000.0,
+            "sendToSnapshotMs":(observed-sent).as_secs_f64()*1000.0}),
+        );
+    }
+    if options.live_values_rounds > 0 {
+        let previous_generation = host.runtime["generation"].as_u64().unwrap_or(0);
+        host.send(Packet::message(
+            "cranpose.dev.values",
+            &live_values(&cleanup.original, &options.source)?,
+        ))?;
+        host.snapshot_after(&["Count: 3", "Increment"], 10, Some(previous_generation))?;
+    }
     let patched = cleanup
         .original
         .replace("\"Increment\"", "\"Add two!!\"")
@@ -572,12 +610,35 @@ pub fn run(mut options: Options) -> Result<()> {
     let shutdown_ms = stop_preview(&mut cleanup.child, &pids)?;
     let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change",
         "startupMs":startup_ms, "backgroundNoiseMs":options.background_noise_ms,
-        "snapshotPollMs":200, "patches":timings, "shutdownMs":shutdown_ms, "stoppedPids":pids, "idle":idle, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
+        "snapshotPollMs":200, "patches":timings, "liveValues":live_timings, "shutdownMs":shutdown_ms, "stoppedPids":pids, "idle":idle, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
     drop(cleanup);
     if let Some(lease) = fixture_lease {
         lease.complete()?;
     }
     write_report(options.report, &result)
+}
+fn live_values(source: &str, path: &std::path::Path) -> Result<String> {
+    use cranpose_plugin_authoring::{
+        Catalog,
+        runtime::{Update, Value as Literal},
+    };
+    let catalog = Catalog::parse(source)?;
+    Ok(serde_json::to_string(&Update {
+        file: path.to_string_lossy().replace('\\', "/"),
+        schema: catalog.schema,
+        revision: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_micros() as u64,
+        values: catalog
+            .literals
+            .into_iter()
+            .map(|l| Literal {
+                id: l.id,
+                kind: l.kind,
+                value: l.value,
+            })
+            .collect(),
+    })?)
 }
 // Dioxus timestamps start with the compiler process; host timings start with
 // the runner spawn. Keep their clock origins explicit instead of subtracting them.

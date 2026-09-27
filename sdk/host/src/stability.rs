@@ -161,12 +161,17 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                                 }
                                 let badge = badge.clone();
                                 let captured = badge.clone();
+                                let weak = Arc::downgrade(project);
                                 let id = jvm::register(move |j, op, args| {
                                     if op == "Badge.calcWidthInPixels" {
                                         let width = width(j, &args[0], &captured)?;
                                         j.boxed_int(width)
                                     } else {
-                                        paint(j, args, &captured)?;
+                                        if weak.upgrade().is_none_or(|p| {
+                                            !p.authoring.lock().expect("authoring").overlay_ready
+                                        }) {
+                                            paint(j, args, &captured)?;
+                                        }
                                         j.null()
                                     }
                                 });
@@ -182,6 +187,7 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                                         .expect("stability")
                                         .placed
                                         .push(Placed { inlay, id, badge });
+                                    crate::authoring::invalidate(project);
                                 }
                             }
                         }
@@ -390,6 +396,7 @@ fn document_path(
         .map(|p| p.to_string_lossy().replace('\\', "/")))
 }
 pub fn clear(project: &Project, j: &mut J<'_>) -> Result<()> {
+    crate::authoring::invalidate(project);
     hide_tooltip(project, j)?;
     let placed = std::mem::take(&mut project.stability.lock().expect("stability").placed);
     for placed in placed {
@@ -549,6 +556,47 @@ fn font(j: &mut J<'_>, inlay: &O) -> Result<(O, O)> {
         &[],
     )?;
     Ok((font, component))
+}
+/// Only visible inlays are sent to the Cranpose overlay; locations come from the
+/// editor so scrolling, font changes and other inline hints stay aligned.
+pub fn decorations(
+    project: &Project,
+    j: &mut J<'_>,
+    editor: &O,
+    x: i32,
+    y: i32,
+    height: i32,
+) -> Result<Vec<Value>> {
+    let state = project.stability.lock().expect("stability");
+    let mut result = vec![];
+    for placed in &state.placed {
+        if !j.bool(&placed.inlay, "isValid")? {
+            continue;
+        }
+        let owner = j.obj(
+            &placed.inlay,
+            "getEditor",
+            "()Lcom/intellij/openapi/editor/Editor;",
+            &[],
+        )?;
+        if !j.same(&owner, editor)? {
+            continue;
+        }
+        let rect = j.obj(&placed.inlay, "getBounds", "()Ljava/awt/Rectangle;", &[])?;
+        if rect.is_null() {
+            continue;
+        }
+        let top = j.field_int(&rect, "y")? - y;
+        let h = j.field_int(&rect, "height")?;
+        if top + h < 0 || top > height {
+            continue;
+        }
+        result.push(json!({"kind":"badge","x":j.field_int(&rect,"x")?-x+3,"y":top+2,"width":(j.field_int(&rect,"width")?-6).max(1),"height":(h-4).max(1),"label":placed.badge.label,"tone":placed.badge.tone}));
+        if result.len() >= 128 {
+            break;
+        }
+    }
+    Ok(result)
 }
 fn width(j: &mut J<'_>, inlay: &O, badge: &Badge) -> Result<i32> {
     let (font, component) = font(j, inlay)?;

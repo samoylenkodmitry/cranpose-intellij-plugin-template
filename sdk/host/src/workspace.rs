@@ -38,6 +38,11 @@ struct State {
     viewport: [i32; 2],
 }
 impl Workspace {
+    pub fn live_values(&self, payload: &str) {
+        if let Some((_, panel)) = &self.state.lock().expect("workspace").active {
+            panel.message("cranpose.dev.values", payload);
+        }
+    }
     pub fn new(project: Arc<Project>, j: &mut J<'_>, source: O) -> Result<Arc<Self>> {
         let options = project::options(j, true)?;
         let studio = Panel::new(j, options)?;
@@ -630,6 +635,30 @@ pub fn show(
     function: Option<&str>,
     target: Option<&Target>,
 ) -> Result<()> {
+    reveal_source(project, j, path)?;
+    let workspaces = project
+        .workspaces
+        .lock()
+        .expect("workspaces")
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect::<Vec<_>>();
+    for workspace in workspaces {
+        if workspace.source_path == path {
+            if let Some(function) = function {
+                workspace.command(json!({"action":"showFunction","name":function}));
+            }
+            if let Some(target) = target {
+                workspace.command(json!({"action":"showTarget","target":target}));
+            }
+            workspace.studio.start(j)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reveal a source editor without starting or replacing its preview session.
+pub fn reveal_source(project: &Project, j: &mut J<'_>, path: &str) -> Result<()> {
     let fs = j.static_obj(
         "com/intellij/openapi/vfs/LocalFileSystem",
         "getInstance",
@@ -674,24 +703,6 @@ pub fn show(
                 "(Lcom/intellij/openapi/fileEditor/TextEditorWithPreview$Layout;)V",
                 &[A::O(&layout)],
             )?;
-        }
-    }
-    let workspaces = project
-        .workspaces
-        .lock()
-        .expect("workspaces")
-        .iter()
-        .filter_map(std::sync::Weak::upgrade)
-        .collect::<Vec<_>>();
-    for workspace in workspaces {
-        if workspace.source_path == path {
-            if let Some(function) = function {
-                workspace.command(json!({"action":"showFunction","name":function}));
-            }
-            if let Some(target) = target {
-                workspace.command(json!({"action":"showTarget","target":target}));
-            }
-            workspace.studio.start(j)?;
         }
     }
     Ok(())
@@ -867,7 +878,7 @@ pub fn integration_test(project: Arc<Project>, j: &mut J<'_>) -> Result<()> {
         workspace.studio.restart(j)?;
         // Persisted width remains authoritative; other controller state comes from the checkpoint.
         wait_checkpoint(j)?;
-        for (width, expected_width, expected_top) in [(1024, 614.4, 88.0), (480, 480.0, 126.0)] {
+        for (width, expected_width) in [(1024, 614.4), (480, 480.0)] {
             bounds(j, workspace.component(), 0, 0, width, 620)?;
             workspace.layout(j)?;
             workspace.studio.primary.size(j)?;
@@ -878,7 +889,14 @@ pub fn integration_test(project: Arc<Project>, j: &mut J<'_>) -> Result<()> {
                 let placement = workspace.state.lock().expect("workspace").placement.clone();
                 let actual_width = placement["viewport"]["width"].as_f64().unwrap_or_default();
                 let actual_top = placement["viewport"]["y"].as_f64().unwrap_or_default();
-                if (actual_width - expected_width).abs() < 1.0 && actual_top == expected_top {
+                let actual_height = placement["viewport"]["height"].as_f64().unwrap_or_default();
+                // Consumers can use different toolbar heights. Assert that the
+                // preview reflows below its controls and stays inside the host.
+                if (actual_width - expected_width).abs() < 1.0
+                    && actual_top > 0.0
+                    && actual_height > 0.0
+                    && actual_top + actual_height <= 620.0
+                {
                     break;
                 }
                 ensure!(

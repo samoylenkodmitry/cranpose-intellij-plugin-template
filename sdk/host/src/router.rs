@@ -12,9 +12,24 @@ pub fn dispatch(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Res
         return crate::ide_tests::dispatch(j, operation);
     }
     let class = operation.split('.').next().unwrap_or_default();
+    if matches!(class, "ShowcaseGenerator" | "ShowcaseBuilder") {
+        return crate::wizard::dispatch(j, operation, receiver, args);
+    }
+    if matches!(class, "ShowcasePeer" | "ShowcaseStep") {
+        let id = j.id(receiver)?;
+        return jvm::invoke(j, id, operation, args);
+    }
     if matches!(
         class,
-        "Callback" | "Surface" | "Workspace" | "PreviewEditor" | "Badge" | "RunSettings"
+        "Callback"
+            | "Surface"
+            | "Workspace"
+            | "PreviewEditor"
+            | "Badge"
+            | "RunSettings"
+            | "ValueGlyph"
+            | "PreviewGutter"
+            | "PreviewClick"
     ) {
         let id = j.id(receiver)?;
         if id == 0 {

@@ -302,6 +302,20 @@ pub fn later(
     j: &mut J<'_>,
     task: impl for<'a> Fn(&mut J<'a>) -> Result<()> + Send + Sync + 'static,
 ) -> Result<()> {
+    later_with_modality(j, task, false)
+}
+/// Complete project setup after any project-creation dialogs have closed.
+pub fn later_non_modal(
+    j: &mut J<'_>,
+    task: impl for<'a> Fn(&mut J<'a>) -> Result<()> + Send + Sync + 'static,
+) -> Result<()> {
+    later_with_modality(j, task, true)
+}
+fn later_with_modality(
+    j: &mut J<'_>,
+    task: impl for<'a> Fn(&mut J<'a>) -> Result<()> + Send + Sync + 'static,
+    non_modal: bool,
+) -> Result<()> {
     let id_cell = Arc::new(AtomicI64::new(0));
     let captured = id_cell.clone();
     let id = register(move |j, _, _| {
@@ -312,12 +326,28 @@ pub fn later(
     id_cell.store(id, Ordering::Release);
     let callback = callback(j, id)?;
     let app = j.application()?;
-    if let Err(error) = j.void(
-        &app,
-        "invokeLater",
-        "(Ljava/lang/Runnable;)V",
-        &[A::O(&callback)],
-    ) {
+    let queued = if non_modal {
+        let modality = j.static_obj(
+            "com/intellij/openapi/application/ModalityState",
+            "nonModal",
+            "()Lcom/intellij/openapi/application/ModalityState;",
+            &[],
+        )?;
+        j.void(
+            &app,
+            "invokeLater",
+            "(Ljava/lang/Runnable;Lcom/intellij/openapi/application/ModalityState;)V",
+            &[A::O(&callback), A::O(&modality)],
+        )
+    } else {
+        j.void(
+            &app,
+            "invokeLater",
+            "(Ljava/lang/Runnable;)V",
+            &[A::O(&callback)],
+        )
+    };
+    if let Err(error) = queued {
         unregister(id);
         return Err(error);
     }

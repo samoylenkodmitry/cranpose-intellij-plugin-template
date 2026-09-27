@@ -7,6 +7,7 @@ publish = false
 [lib]
 name = "cranpose_ide_tools"
 [dependencies]
+cranpose-plugin-authoring = { path = "../authoring" }
 cranpose-plugin-cache = { path = "../cache" }
 cranpose-jvm-bridge = { path = "../jvm-bridge" }
 anyhow = "1"
