@@ -21,3 +21,8 @@ Validation: Rust subprocess tests exercise stdout/stderr backpressure, long line
 nonzero exits, pre-cancellation, deadlines and descendant exit. The actual IDEA
 suite checks exclusive operation ownership, explicit cancellation, slot release,
 project disposal and rejection of late work.
+
+Linux process-group observation reads `/proc` directly and excludes exited zombie
+processes. `libproc` is confined to macOS: its host-conditioned build script tried
+to generate Darwin bindings when cross-compiling this SDK from macOS to Linux.
+The Linux lifecycle suite covers both live and exited descendant groups.
