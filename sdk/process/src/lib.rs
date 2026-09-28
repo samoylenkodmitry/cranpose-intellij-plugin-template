@@ -5,7 +5,7 @@
 mod capture;
 pub use capture::capture;
 mod stream;
-pub use stream::{Cancellation, execute};
+pub use stream::{Cancellation, ExecutionEvent, execute, execute_observed};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

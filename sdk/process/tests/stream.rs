@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cranpose_plugin_process::{self as process, Cancellation};
+use cranpose_plugin_process::{self as process, Cancellation, ExecutionEvent};
 use std::{
     fs,
     process::Command,
@@ -127,5 +127,74 @@ fn timeout_and_pre_cancel_never_report_success() -> Result<()> {
         )
         .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn observes_one_start_before_output_and_no_start_on_spawn_failure() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let mut starts = Vec::new();
+    let mut output = false;
+    process::execute_observed(
+        fixture("output", root.path())?,
+        Duration::from_secs(10),
+        &Cancellation::default(),
+        |event| match event {
+            ExecutionEvent::Started { pid } => {
+                assert!(!output);
+                starts.push(pid);
+            }
+            ExecutionEvent::Output { .. } => {
+                assert_eq!(starts.len(), 1);
+                output = true;
+            }
+        },
+    )?;
+    assert!(output);
+    assert_eq!(starts.len(), 1);
+    assert!(!process::is_running(starts[0]));
+
+    for cancelled in [false, true] {
+        let cancel = Cancellation::default();
+        if cancelled {
+            cancel.cancel();
+        }
+        let mut events = 0;
+        let command = if cancelled {
+            fixture("tree", root.path())?
+        } else {
+            Command::new(root.path().join("missing executable"))
+        };
+        assert!(
+            process::execute_observed(command, Duration::from_secs(5), &cancel, |_| {
+                events += 1;
+            })
+            .is_err()
+        );
+        assert_eq!(events, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn start_observer_can_cancel_without_waiting_for_application_output() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let cancel = Cancellation::default();
+    let mut started = None;
+    let start = Instant::now();
+    let result = process::execute_observed(
+        fixture("leaf", root.path())?,
+        Duration::from_secs(10),
+        &cancel,
+        |event| {
+            if let ExecutionEvent::Started { pid } = event {
+                started = Some(pid);
+                cancel.cancel();
+            }
+        },
+    );
+    assert!(result.is_err());
+    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(!process::is_running(started.expect("start notification")));
     Ok(())
 }
