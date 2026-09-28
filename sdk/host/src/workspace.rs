@@ -39,6 +39,7 @@ struct State {
     viewport: [i32; 2],
     trace: Option<crate::feedback::Trace>,
     last_frame: Option<std::time::Instant>,
+    menu: Option<i64>,
 }
 impl Workspace {
     pub fn has_preview(&self) -> bool {
@@ -99,6 +100,7 @@ impl Workspace {
                 viewport: [0, 0],
                 trace: None,
                 last_frame: None,
+                menu: None,
             }),
             closed: AtomicBool::new(false),
         });
@@ -254,6 +256,16 @@ impl Workspace {
             "layout" => {
                 self.state.lock().expect("workspace").placement = request;
                 self.layout(j)?;
+            }
+            "menu" => self.menu(j, &request)?,
+            "tooltip" => {
+                let text = request["text"].as_str().filter(|text| !text.is_empty());
+                j.void(
+                    self.studio.primary.component(),
+                    "setToolTipText",
+                    "(Ljava/lang/String;)V",
+                    &[text.map_or(A::Null, A::S)],
+                )?;
             }
             "message" => {
                 let child = self.state.lock().expect("workspace").active.clone();
@@ -567,6 +579,139 @@ impl Workspace {
             }));
         panel.start(j)
     }
+    /// A native IDE list popup at a Studio anchor. It overlaps the running
+    /// application surface, supports speed search and keyboard navigation, and
+    /// reports the chosen item back as a `studio.command`.
+    fn menu(self: &Arc<Self>, j: &mut J<'_>, request: &Value) -> Result<()> {
+        let items = request["items"]
+            .as_array()
+            .map(|items| items.iter().take(500).cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        if items.is_empty() {
+            return Ok(());
+        }
+        let text = |item: &Value, key: &str| item[key].as_str().unwrap_or_default().to_owned();
+        let labels = items.iter().map(|i| text(i, "label")).collect::<Vec<_>>();
+        let ids = items.iter().map(|i| text(i, "id")).collect::<Vec<_>>();
+        let separators = items
+            .iter()
+            .map(|i| i["separator"] == true)
+            .collect::<Vec<_>>();
+        let checked = items.iter().position(|i| i["checked"] == true);
+        let search = items.len() > 7;
+        let menu = model::s(request, "menu");
+        let weak = Arc::downgrade(self);
+        let id = jvm::register(move |j, op, args| {
+            let index = if args.first().is_some_and(|a| !a.is_null()) {
+                j.int(&args[0], "intValue")? as usize
+            } else {
+                usize::MAX
+            };
+            match op {
+                "MenuStep.getTextFor" => j.string(labels.get(index).map_or("", String::as_str)),
+                "MenuStep.getSeparatorAbove" if separators.get(index) == Some(&true) => {
+                    j.new("com/intellij/openapi/ui/popup/ListSeparator", "()V", &[])
+                }
+                "MenuStep.isSpeedSearchEnabled" => j.boxed_bool(search),
+                "MenuStep.onChosen" => {
+                    if let (Some(workspace), Some(item)) = (weak.upgrade(), ids.get(index)) {
+                        workspace.command(json!({"action":"menu","menu":menu,"item":item}));
+                    }
+                    j.null()
+                }
+                _ => j.null(),
+            }
+        });
+        // One menu at a time: the previous step's callbacks are released here.
+        if let Some(previous) = self.state.lock().expect("workspace").menu.replace(id) {
+            jvm::unregister(previous);
+        }
+        let step = j.new("dev/cranpose/rust/MenuStep", "(J)V", &[A::J(id)])?;
+        let values = j.new("java/util/ArrayList", "()V", &[])?;
+        let icons = j.new("java/util/ArrayList", "()V", &[])?;
+        let mark = j.constant(
+            "com/intellij/icons/AllIcons$Actions",
+            "Checked",
+            "Ljavax/swing/Icon;",
+        )?;
+        let blank = j.constant(
+            "com/intellij/util/ui/EmptyIcon",
+            "ICON_16",
+            "Lcom/intellij/util/ui/EmptyIcon;",
+        )?;
+        for (index, item) in items.iter().enumerate() {
+            let value = j.boxed_int(index as i32)?;
+            j.call(&values, "add", "(Ljava/lang/Object;)Z", &[A::O(&value)])?;
+            let icon = if item["checked"] == true {
+                &mark
+            } else {
+                &blank
+            };
+            j.call(&icons, "add", "(Ljava/lang/Object;)Z", &[A::O(icon)])?;
+        }
+        j.void(
+            &step,
+            "init",
+            "(Ljava/lang/String;Ljava/util/List;Ljava/util/List;)V",
+            &[
+                A::Null,
+                A::O(&values),
+                if checked.is_some() {
+                    A::O(&icons)
+                } else {
+                    A::Null
+                },
+            ],
+        )?;
+        if let Some(index) = checked {
+            j.void(
+                &step,
+                "setDefaultOptionIndex",
+                "(I)V",
+                &[A::I(index as i32)],
+            )?;
+        }
+        let factory = j.static_obj(
+            "com/intellij/openapi/ui/popup/JBPopupFactory",
+            "getInstance",
+            "()Lcom/intellij/openapi/ui/popup/JBPopupFactory;",
+            &[],
+        )?;
+        let popup = j.obj(
+            &factory,
+            "createListPopup",
+            "(Lcom/intellij/openapi/ui/popup/ListPopupStep;)Lcom/intellij/openapi/ui/popup/ListPopup;",
+            &[A::O(&step)],
+        )?;
+        let number = |key: &str| request[key].as_f64().unwrap_or_default() as i32;
+        let minimum = j.new(
+            "java/awt/Dimension",
+            "(II)V",
+            &[A::I(number("width").max(160)), A::I(1)],
+        )?;
+        j.void(
+            &popup,
+            "setMinimumSize",
+            "(Ljava/awt/Dimension;)V",
+            &[A::O(&minimum)],
+        )?;
+        let point = j.new(
+            "java/awt/Point",
+            "(II)V",
+            &[A::I(number("x")), A::I(number("y"))],
+        )?;
+        let relative = j.new(
+            "com/intellij/ui/awt/RelativePoint",
+            "(Ljava/awt/Component;Ljava/awt/Point;)V",
+            &[A::O(self.studio.primary.component()), A::O(&point)],
+        )?;
+        j.void(
+            &popup,
+            "show",
+            "(Lcom/intellij/ui/awt/RelativePoint;)V",
+            &[A::O(&relative)],
+        )
+    }
     pub fn layout(&self, j: &mut J<'_>) -> Result<()> {
         let Some(component) = self.component.get() else {
             return Ok(());
@@ -717,6 +862,9 @@ impl Workspace {
         let children = {
             let mut state = self.state.lock().expect("workspace");
             state.pending.clear();
+            if let Some(menu) = state.menu.take() {
+                jvm::unregister(menu);
+            }
             [state.active.take(), state.candidate.take()]
         };
         for (_, panel) in children.into_iter().flatten() {

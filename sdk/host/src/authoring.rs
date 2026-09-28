@@ -15,7 +15,7 @@ use cranpose_plugin_authoring::{
     runtime::{Update, Value as LiveValue},
 };
 #[cfg(feature = "ide-tests")]
-pub use placement_test::integration_test as placement_test;
+pub use placement_test::{decorations_evidence, integration_test as placement_test};
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -1452,7 +1452,7 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                 // Some IDE versions suppress unchanged update notifications;
                 // removal must always move following editor content.
                 ensure!(
-                    j.int(&object, "getWidthInPixels")? == 14,
+                    j.int(&object, "getWidthInPixels")? == crate::glyphs::VALUE_WIDTH,
                     "Live glyph must reserve editor space"
                 );
                 j.void(&object, "dispose", "()V", &[])?;

@@ -134,7 +134,7 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                                 "Incorrect Unicode glyph offset"
                             );
                             ensure!(
-                                j.int(object, "getWidthInPixels")? == 14,
+                                j.int(object, "getWidthInPixels")? == crate::glyphs::VALUE_WIDTH,
                                 "Missing reserved glyph space"
                             );
                         }
@@ -330,9 +330,11 @@ fn lifecycle(project: &Arc<Project>, j: &mut J<'_>, factory: &O) -> Result<()> {
             ensure!(pixels.len() > 10, "Value glyph {literal} did not paint");
             if Some(literal) == color_id {
                 ensure!(
-                    pixels
-                        .iter()
-                        .any(|p| p[0] > 150 && p[1] < 110 && p[2] < 120),
+                    // 25% red over the transparency checkerboard: a red tint.
+                    pixels.iter().any(|p| {
+                        i32::from(p[0]) - i32::from(p[1]) > 25
+                            && i32::from(p[0]) - i32::from(p[2]) > 20
+                    }),
                     "Color swatch does not show the edited color"
                 );
             }
@@ -485,5 +487,118 @@ fn write(
         &[A::O(&project.object), A::O(&callback)],
     );
     jvm::unregister(id);
+    result
+}
+
+/// Paint a realistic editor with every native decoration into
+/// `editor-decorations.png` in the test evidence directory.
+pub fn decorations_evidence(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
+    let source = "#[composable]\nfn Card(title: String, shared: Rc<RefCell<i32>>, count: usize, on_click: impl Fn()) {\n    Column(Modifier::empty().padding(16.0), ColumnSpec::default(), move || {\n        Text(\"Hello, Cranpose\", Modifier::empty(), style(Color(0.35, 0.62, 0.98, 1.0), 18.0));\n        Text(\"Tuned live\", Modifier::empty(), style(Color(0.8, 0.15, 0.2, 0.5), 13.0));\n        Spacer(Size { width: 0.0, height: 12.0 });\n        Switch(true, Modifier::empty(), |_| {});\n    });\n}\n";
+    let factory = j.static_obj(
+        "com/intellij/openapi/editor/EditorFactory",
+        "getInstance",
+        "()Lcom/intellij/openapi/editor/EditorFactory;",
+        &[],
+    )?;
+    let document = j.obj(
+        &factory,
+        "createDocument",
+        "(Ljava/lang/CharSequence;)Lcom/intellij/openapi/editor/Document;",
+        &[A::S(source)],
+    )?;
+    let editor = j.obj(&factory, "createEditor", "(Lcom/intellij/openapi/editor/Document;Lcom/intellij/openapi/project/Project;)Lcom/intellij/openapi/editor/Editor;", &[A::O(&document), A::O(&project.object)])?;
+    let result = (|| -> Result<()> {
+        let catalog = Catalog::parse(source)?;
+        watch_editor(project, j, &editor)?;
+        place(project, j, &editor, "evidence.rs", &catalog)?;
+        remember(project, j, &document, source, &catalog)?;
+        refresh_calls(project, j, &editor, &catalog)?;
+        let model = j.obj(
+            &editor,
+            "getInlayModel",
+            "()Lcom/intellij/openapi/editor/InlayModel;",
+            &[],
+        )?;
+        let mut badges = vec![];
+        for (after, label, tone) in [
+            ("title: String", "stable", "stable"),
+            ("shared: Rc<RefCell<i32>>", "shared mutation", "danger"),
+            ("count: usize", "unknown", "muted"),
+            ("on_click: impl Fn()", "no skip", "warning"),
+        ] {
+            let end = source.find(after).expect("parameter") + after.len();
+            let offset = source[..end].encode_utf16().count() as i32;
+            let id = jvm::register(move |j, op, args| {
+                if op == "Badge.calcWidthInPixels" {
+                    let width = crate::glyphs::badge_width(j, &args[0], label)?;
+                    j.boxed_int(width)
+                } else {
+                    crate::glyphs::badge(j, args, label, tone)?;
+                    j.null()
+                }
+            });
+            let renderer = j.new("dev/cranpose/rust/Badge", "(J)V", &[A::J(id)])?;
+            j.obj(&model, "addInlineElement", "(IZLcom/intellij/openapi/editor/EditorCustomElementRenderer;)Lcom/intellij/openapi/editor/Inlay;", &[A::I(offset), A::Z(true), A::O(&renderer)])?;
+            badges.push(id);
+        }
+        let component = j.obj(&editor, "getComponent", "()Ljavax/swing/JComponent;", &[])?;
+        let (width, height) = (1180, 260);
+        j.void(&component, "setSize", "(II)V", &[A::I(width), A::I(height)])?;
+        j.void(&component, "doLayout", "()V", &[])?;
+        let content = j.obj(
+            &editor,
+            "getContentComponent",
+            "()Ljavax/swing/JComponent;",
+            &[],
+        )?;
+        j.void(&content, "setSize", "(II)V", &[A::I(width), A::I(height)])?;
+        let image = j.new(
+            "java/awt/image/BufferedImage",
+            "(III)V",
+            &[A::I(width), A::I(height), A::I(2)],
+        )?;
+        let graphics = j.obj(&image, "createGraphics", "()Ljava/awt/Graphics2D;", &[])?;
+        j.void(
+            &content,
+            "paint",
+            "(Ljava/awt/Graphics;)V",
+            &[A::O(&graphics)],
+        )?;
+        j.void(&graphics, "dispose", "()V", &[])?;
+        let output = j.static_obj(
+            "java/lang/System",
+            "getProperty",
+            "(Ljava/lang/String;)Ljava/lang/String;",
+            &[A::S("cranpose.test.output")],
+        )?;
+        let output = j.read_string(&output)?;
+        let file = j.new(
+            "java/io/File",
+            "(Ljava/lang/String;)V",
+            &[A::S(&format!("{output}/editor-decorations.png"))],
+        )?;
+        ensure!(
+            j.static_call(
+                "javax/imageio/ImageIO",
+                "write",
+                "(Ljava/awt/image/RenderedImage;Ljava/lang/String;Ljava/io/File;)Z",
+                &[A::O(&image), A::S("png"), A::O(&file)]
+            )?
+            .z()?,
+            "PNG encoder"
+        );
+        for id in badges {
+            jvm::unregister(id);
+        }
+        Ok(())
+    })();
+    clear_placed(project, j)?;
+    unwatch_editor(project, j)?;
+    j.void(
+        &factory,
+        "releaseEditor",
+        "(Lcom/intellij/openapi/editor/Editor;)V",
+        &[A::O(&editor)],
+    )?;
     result
 }
