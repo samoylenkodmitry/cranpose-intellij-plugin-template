@@ -1,4 +1,50 @@
-//! Screen-space placement that leaves the hovered source line clickable.
+//! Source-friendly placement and explicit activation of hover controls.
+
+use crate::jvm::{self, A, J, O};
+use anyhow::Result;
+
+/// Give an already-visible hover popup keyboard focus after explicit activation.
+/// Requesting focus inside its window is insufficient: IntelliJ creates hover
+/// windows with native focus disabled when `setRequestFocus(false)` is used.
+pub fn activate(j: &mut J<'_>, popup: &O, component: &O) -> Result<()> {
+    j.void(popup, "setRequestFocus", "(Z)V", &[A::Z(true)])?;
+    let popup = popup.clone();
+    let component = component.clone();
+    // Finish the editor's mouse dispatch before transferring keyboard focus.
+    jvm::later(j, move |j| {
+        if j.bool(&popup, "isDisposed")? || !j.bool(&popup, "isVisible")? {
+            return Ok(());
+        }
+        let window = j.static_obj(
+            "javax/swing/SwingUtilities",
+            "getWindowAncestor",
+            "(Ljava/awt/Component;)Ljava/awt/Window;",
+            &[A::O(&component)],
+        )?;
+        if window.is_null() {
+            return Ok(());
+        }
+        j.void(&window, "setFocusable", "(Z)V", &[A::Z(true)])?;
+        // Restore the native window flags as well as the Swing component flag.
+        // Bring it forward only for this explicit gesture, never on hover.
+        j.void(&window, "setFocusableWindowState", "(Z)V", &[A::Z(true)])?;
+        j.void(&window, "setAutoRequestFocus", "(Z)V", &[A::Z(true)])?;
+        j.void(&window, "toFront", "()V", &[])?;
+        let manager = j.static_obj(
+            "com/intellij/openapi/wm/IdeFocusManager",
+            "getGlobalInstance",
+            "()Lcom/intellij/openapi/wm/IdeFocusManager;",
+            &[],
+        )?;
+        j.obj(
+            &manager,
+            "requestFocus",
+            "(Ljava/awt/Component;Z)Lcom/intellij/openapi/util/ActionCallback;",
+            &[A::O(&component), A::Z(true)],
+        )?;
+        Ok(())
+    })
+}
 
 /// Rectangles are [left, top, width, height] in Swing logical coordinates.
 /// Prefer below, then above, then beside the protected source. If the screen
