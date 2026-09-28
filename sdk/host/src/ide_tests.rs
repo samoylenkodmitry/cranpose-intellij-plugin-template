@@ -31,6 +31,10 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                 ),
                 ("native surface pixels and disposal", surface),
                 (
+                    "cancellable project background jobs",
+                    crate::jobs::integration_test,
+                ),
+                (
                     "transparent editor overlay preserves source",
                     crate::surface::Surface::test_overlay_paint,
                 ),
@@ -86,7 +90,7 @@ fn property(j: &mut J<'_>, key: &str) -> Result<String> {
     )?;
     j.read_string(&value)
 }
-fn project(j: &mut J<'_>) -> Result<Arc<Project>> {
+pub(crate) fn project(j: &mut J<'_>) -> Result<Arc<Project>> {
     let manager = j.static_obj(
         "com/intellij/openapi/project/ProjectManager",
         "getInstance",

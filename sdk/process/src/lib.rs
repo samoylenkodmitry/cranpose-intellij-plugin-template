@@ -4,6 +4,8 @@
 
 mod capture;
 pub use capture::capture;
+mod stream;
+pub use stream::{Cancellation, execute};
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -132,7 +134,52 @@ impl Process {
         }
     }
     fn scope_empty(&self) -> io::Result<bool> {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(target_os = "linux")]
+        {
+            let group = if self.group {
+                self.child.id()
+            } else {
+                nix::unistd::getpgrp().as_raw() as u32
+            };
+            if nix::sys::signal::killpg(nix::unistd::Pid::from_raw(group as i32), None)
+                == Err(nix::errno::Errno::ESRCH)
+            {
+                return Ok(true);
+            }
+            for entry in std::fs::read_dir("/proc")? {
+                let entry = entry?;
+                let Some(pid) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|s| s.parse::<u32>().ok())
+                else {
+                    continue;
+                };
+                if !self.group && pid == std::process::id() {
+                    continue;
+                }
+                let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+                    Ok(stat) => stat,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                // comm is parenthesized and may itself contain spaces or ')'.
+                let Some((_, tail)) = stat.rsplit_once(") ") else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid process stat",
+                    ));
+                };
+                let mut fields = tail.split_whitespace();
+                let state = fields.next();
+                let process_group = fields.nth(1).and_then(|s| s.parse::<u32>().ok());
+                if process_group == Some(group) && !matches!(state, Some("Z" | "X")) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        #[cfg(target_os = "macos")]
         {
             use libproc::processes::{ProcFilter, pids_by_type};
             let group = if self.group {

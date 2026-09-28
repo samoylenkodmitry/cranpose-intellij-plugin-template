@@ -39,6 +39,7 @@ pub struct Project {
     pub editor: Mutex<crate::editor::State>,
     pub authoring: Mutex<crate::authoring::State>,
     pub feedback: Mutex<crate::feedback::State>,
+    pub job: Mutex<Option<cranpose_plugin_process::Cancellation>>,
 }
 impl Project {
     pub fn get(j: &mut J<'_>, object: &O) -> Result<Arc<Self>> {
@@ -66,6 +67,7 @@ impl Project {
             editor: Mutex::new(crate::editor::State::default()),
             authoring: Mutex::new(crate::authoring::State::default()),
             feedback: Mutex::new(crate::feedback::State::default()),
+            job: Mutex::new(None),
         });
         registry.push(project.clone());
         drop(registry);
@@ -639,6 +641,7 @@ impl Project {
             return Ok(());
         }
         self.stop(j)?;
+        crate::jobs::cancel_project(self);
         if let Some(timer) = self.timer.get() {
             j.void(timer, "stop", "()V", &[])?;
         }
