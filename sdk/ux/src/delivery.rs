@@ -37,11 +37,37 @@ impl SequenceGate {
         self.0.set((revision, issued));
         true
     }
+
+    /// Reject every reply already issued, including an equal repeated reply.
+    /// Call before requesting a fresh observation after hiding or resuming a view.
+    /// The reserved revision is never sent; subsequent requests stay monotonic.
+    pub fn discard_pending(&self) {
+        let (accepted, issued) = self.0.get();
+        self.0.set((accepted.max(issued).saturating_add(1), issued));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discarding_pending_replies_survives_clones_and_repeated_transitions() {
+        let gate = SequenceGate::default();
+        let first = gate.next_request();
+        assert!(gate.accept(first));
+        let pending = gate.next_request();
+        let clone = gate.clone();
+        clone.discard_pending();
+        assert!(!gate.accept(first));
+        assert!(!gate.accept(pending));
+        let fresh = gate.next_request();
+        assert!(fresh > pending);
+        assert!(clone.accept(fresh));
+        gate.discard_pending();
+        gate.discard_pending();
+        assert!(!clone.accept(fresh));
+        assert!(clone.accept(gate.next_request()));
+    }
     #[test]
     fn request_numbers_advance_without_rejecting_in_flight_replies() {
         let gate = SequenceGate::default();

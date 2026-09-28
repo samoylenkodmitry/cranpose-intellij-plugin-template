@@ -40,6 +40,9 @@ pub struct Options {
     /// Exercise end-of-list scrolling, collapse at the end and expansion.
     #[arg(long)]
     exercise_tree: bool,
+    /// Verify hidden/paused inspection cannot retain live bounds or intercept clicks.
+    #[arg(long)]
+    exercise_selection: bool,
     /// Move the inspector between side and bottom layouts after the CPU samples.
     #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=30))]
     resize_rounds: u32,
@@ -275,6 +278,11 @@ pub fn run(options: Options) -> Result<()> {
         options.resize_rounds,
         retained_rows.as_ref(),
     )?);
+    let selection_checks = if options.exercise_selection {
+        Some(exercise_selection(&host)?)
+    } else {
+        None
+    };
     child.terminate(Duration::from_secs(2))?;
     ensure!(
         child.wait_for_tree_exit(Duration::from_secs(2))?,
@@ -286,10 +294,123 @@ pub fn run(options: Options) -> Result<()> {
         "initialLayout":{"latencyMs":initial_ms,"cpuSeconds":initial_cpu_seconds,
             "uiNodes":initial_view["nodes"].as_array().map(Vec::len),"uiSnapshotTruncated":initial_view["truncated"]},
         "changedLayouts":changes,"changedWorkload":changed_workload,"treeChecks":tree_checks,
-        "resizeChecks":resize_checks});
+        "resizeChecks":resize_checks,"selectionChecks":selection_checks});
     fs::write(&options.report, serde_json::to_vec_pretty(&result)?)?;
     println!("{result}");
     Ok(())
+}
+
+fn selection_placement(
+    host: &crate::hot_smoke::Host,
+    description: &str,
+    matches: impl Fn(&Value) -> bool,
+) -> Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last = Value::Null;
+    loop {
+        for response in host.messages.try_iter() {
+            let (channel, value, _) = response?;
+            if channel == "studio.host" && value["action"] == "layout" {
+                last = value;
+                if matches(&last) {
+                    return Ok(last);
+                }
+            }
+        }
+        ensure!(Instant::now() < deadline, "Missing {description}: {last}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn exercise_selection(host: &crate::hot_smoke::Host) -> Result<Value> {
+    // A new connection resets request IDs after the synthetic measurement traffic.
+    message(
+        host,
+        "studio.child",
+        json!({"session":1,"event":"connected"}),
+    )?;
+    message(host, "studio.viewport", json!({"width":1000,"height":800}))?;
+    host.send(
+        Packet::new(1)
+            .int(0)
+            .int(1000)
+            .int(800)
+            .float(1.0)
+            .float(60.0),
+    )?;
+    let nodes = [
+        json!({"id":"selection","kind":"Text","text":"Selection fixture",
+        "x":12,"y":20,"width":80,"height":24}),
+    ];
+    snapshot(host, &nodes, 1_000_000)?;
+    let view = verify_text(host, "Text · Selection fixture")?;
+    click(host, &view, "Text · Selection fixture")?;
+    selection_placement(host, "initial selected bounds", |value| {
+        value["selected"]["x"].as_f64() == Some(12.0)
+    })?;
+
+    let view = verify_text(host, "Pick")?;
+    click(host, &view, "Pick")?;
+    selection_placement(host, "active Pick", |value| value["pick"] == true)?;
+    let view = verify_text(host, "Inspect")?;
+    click(host, &view, "Inspect")?;
+    let hidden = selection_placement(host, "hidden bounds and released Pick", |value| {
+        value["selected"].is_null() && value["pick"] == false
+    })?;
+    // Wait through more than one normal polling interval. Hidden inspection must
+    // not request snapshots just to keep an invisible selection current.
+    let deadline = Instant::now() + Duration::from_millis(1100);
+    let mut hidden_requests = 0;
+    while Instant::now() < deadline {
+        for response in host.messages.try_iter() {
+            let (channel, value, _) = response?;
+            if channel == "studio.host" && value["channel"] == "cranpose.inspector.v2.request" {
+                hidden_requests += 1;
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    ensure!(
+        hidden_requests == 0,
+        "Hidden inspector sent {hidden_requests} requests"
+    );
+
+    let view = verify_text(host, "Inspect")?;
+    click(host, &view, "Inspect")?;
+    let reopened =
+        selection_placement(host, "reopened inspector awaiting fresh bounds", |value| {
+            value["viewport"] != hidden["viewport"] && value["selected"].is_null()
+        })?;
+    // A delayed response from before hiding must not reactivate the old rectangle.
+    snapshot(host, &nodes, 1_000_000)?;
+    let view = verify_text(host, "Pause")?;
+    let mut moved = nodes.clone();
+    moved[0]["x"] = json!(64);
+    snapshot(host, &moved, 2_000_000)?;
+    selection_placement(host, "fresh moved bounds", |value| {
+        value["selected"]["x"].as_f64() == Some(64.0)
+    })?;
+    click(host, &view, "Pause")?;
+    selection_placement(host, "paused bounds hidden", |value| {
+        value["selected"].is_null()
+    })?;
+    let view = verify_text(host, "Resume")?;
+    click(host, &view, "Resume")?;
+    // Verify the label before delivering the next snapshot; the old details remain.
+    verify_text(host, "Pause")?;
+    snapshot(host, &moved, 3_000_000)?;
+    selection_placement(host, "resumed fresh bounds", |value| {
+        value["selected"]["x"].as_f64() == Some(64.0)
+    })?;
+    snapshot(host, &[], 4_000_000)?;
+    selection_placement(host, "removed selection cleared", |value| {
+        value["selected"].is_null()
+    })?;
+    Ok(
+        json!({"hideClearsBounds":true,"hideDisablesPick":true,"hiddenRequests":hidden_requests,
+        "reopenWaitsForSnapshot":true,"reopenedViewport":reopened["viewport"],
+        "freshBounds":true,"pauseClearsBounds":true,"resumeRefreshesBounds":true,"removedNodeClearsBounds":true}),
+    )
 }
 
 fn verify_retained_rows(host: &crate::hot_smoke::Host, first: &str, anchor: &str) -> Result<()> {
