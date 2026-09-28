@@ -21,6 +21,9 @@ pub struct Options {
     /// Record the seven-target Studio dashboard geometry instead of the shared fixture.
     #[arg(long)]
     dashboard: bool,
+    /// Require the dashboard background to cover the entire viewport.
+    #[arg(long, requires = "dashboard")]
+    require_background: bool,
     #[arg(long)]
     binary: PathBuf,
     #[arg(long)]
@@ -197,7 +200,10 @@ fn dashboard(options: Options) -> Result<()> {
         );
         thread::sleep(Duration::from_millis(10));
     };
-    let host = Host::new(stream, &token)?;
+    let capture = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::ui_probe::FrameCapture::default(),
+    ));
+    let host = Host::capturing(stream, &token, Some(capture.clone()))?;
     host.send(
         Packet::new(1)
             .int(0)
@@ -238,8 +244,29 @@ fn dashboard(options: Options) -> Result<()> {
             && text_node(view, "Preview").is_some()
             && text_node(view, "cranpose-showcase").is_some()
     })?;
+    // Snapshot delivery can precede the corresponding paint. Give the renderer a
+    // bounded opportunity to fill the viewport before evaluating actual pixels.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let (top, bottom) = loop {
+        let frame = capture.lock().expect("frame capture");
+        let top = frame.pixel(5, 5).map(|(rgba, _)| rgba);
+        let bottom = frame.pixel(5, 1195).map(|(rgba, _)| rgba);
+        if (top.is_some_and(|pixel| pixel[3] == 255) && top == bottom) || Instant::now() >= deadline
+        {
+            break (top, bottom);
+        }
+        drop(frame);
+        thread::sleep(Duration::from_millis(10));
+    };
+    if options.require_background {
+        ensure!(
+            top.is_some_and(|pixel| pixel[3] == 255) && top == bottom,
+            "Dashboard background does not cover viewport: top={top:?}, bottom={bottom:?}"
+        );
+    }
     let report = json!({"logicalWidth":440,"logicalHeight":1200,"targets":7,
         "previewY":y(&view,"Preview")?,"buildRunY":y(&view,"Build & run")?,
+        "backgroundTop":top,"backgroundBottom":bottom,
         "uiNodes":view["nodes"].as_array().context("nodes")?.len(),
         "limits":"Isolated native dashboard geometry; excludes IDE chrome, startup and latency."});
     child.terminate(Duration::from_secs(2))?;

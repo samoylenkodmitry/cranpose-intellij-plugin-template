@@ -52,3 +52,8 @@ pointer and keyboard activation, duplicate-label IDs, searching, cancellation,
 paging, a 10,001-item catalog, a removed selection, an empty catalog and process
 shutdown. It asserts a bounded UI node count and unchanged collapsed height
 when catalog size grows. These checks do not measure whole-IDE CPU or latency.
+
+For a Studio renderer, add `--dashboard --require-background` to record the
+seven-target dashboard's control positions and verify that its background fills
+the viewport. This compares rendered pixels at the top and bottom, catching
+short-content layouts that expose the renderer's fallback clear color.
