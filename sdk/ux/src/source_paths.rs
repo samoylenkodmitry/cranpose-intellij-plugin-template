@@ -1,5 +1,37 @@
 //! Map compiler source locations back to an editable source tree.
-use std::path::{Path, PathBuf};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+};
+
+// Rust canonicalization uses verbatim Windows paths; Cargo's manifest env and
+// IDE file APIs use ordinary drive/UNC paths. Compare and return the same form.
+fn ordinary(path: &Path) -> Cow<'_, Path> {
+    #[cfg(windows)]
+    {
+        use std::{
+            ffi::OsString,
+            path::{Component, Prefix},
+        };
+        let mut components = path.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            let mut normal = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut unc = OsString::from(r"\\");
+                    unc.push(server);
+                    unc.push(r"\");
+                    unc.push(share);
+                    PathBuf::from(unc)
+                }
+                _ => return Cow::Borrowed(path),
+            };
+            normal.push(components.as_path());
+            return Cow::Owned(normal);
+        }
+    }
+    Cow::Borrowed(path)
+}
 
 /// Resolve a Rust source location, then apply the most specific directory map.
 ///
@@ -16,30 +48,41 @@ pub fn resolve(
     original_root: &Path,
     mappings: &[(PathBuf, PathBuf)],
 ) -> PathBuf {
+    let file = ordinary(file);
+    let manifest_dir = ordinary(manifest_dir);
+    let compiled_root = ordinary(compiled_root);
     let workspace_relative = !compiled_root.as_os_str().is_empty()
         && manifest_dir
-            .strip_prefix(compiled_root)
+            .strip_prefix(compiled_root.as_ref())
             .ok()
             .filter(|member| !member.as_os_str().is_empty())
             .is_some_and(|member| file.starts_with(member));
     let path = if workspace_relative {
-        compiled_root.join(file)
+        compiled_root.join(file.as_ref())
     } else {
-        manifest_dir.join(file)
+        manifest_dir.join(file.as_ref())
     };
     // Nested generated crates must win over their containing workspace, even
     // when log delivery or checkpoint restoration changes mapping order.
-    if let Some((private, original)) = mappings
+    if let Some((_, relative, original)) = mappings
         .iter()
-        .filter(|(private, _)| !private.as_os_str().is_empty() && path.starts_with(private))
-        .max_by_key(|(private, _)| private.components().count())
+        .filter_map(|(private, original)| {
+            let private = ordinary(private);
+            if private.as_os_str().is_empty() {
+                return None;
+            }
+            path.strip_prefix(private.as_ref())
+                .ok()
+                .map(|relative| (private.components().count(), relative, original))
+        })
+        .max_by_key(|(specificity, _, _)| *specificity)
     {
-        return original.join(path.strip_prefix(private).expect("matching directory"));
+        return ordinary(original).join(relative);
     }
     if !compiled_root.as_os_str().is_empty()
-        && let Ok(relative) = path.strip_prefix(compiled_root)
+        && let Ok(relative) = path.strip_prefix(compiled_root.as_ref())
     {
-        return original_root.join(relative);
+        return ordinary(original_root).join(relative);
     }
     path
 }
@@ -47,6 +90,46 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_roots_match_cargo_drive_and_unc_locations() {
+        for (private, manifest, original, expected) in [
+            (
+                r"\\?\C:\cache",
+                r"C:\cache\app",
+                r"\\?\C:\project",
+                r"C:\project\app\src\main.rs",
+            ),
+            (
+                r"\\?\UNC\server\share\cache",
+                r"\\server\share\cache\app",
+                r"\\?\UNC\server\share\project",
+                r"\\server\share\project\app\src\main.rs",
+            ),
+        ] {
+            assert_eq!(
+                resolve(
+                    Path::new(r"app\src\main.rs"),
+                    Path::new(manifest),
+                    Path::new(private),
+                    Path::new(original),
+                    &[]
+                ),
+                PathBuf::from(expected)
+            );
+            assert_eq!(
+                resolve(
+                    Path::new(r"src\main.rs"),
+                    Path::new(manifest),
+                    Path::new(private),
+                    Path::new("unused"),
+                    &[(PathBuf::from(private), PathBuf::from(original))]
+                ),
+                PathBuf::from(expected)
+            );
+        }
+    }
 
     #[test]
     fn generated_members_accept_both_compiler_path_forms_in_either_map_order() {

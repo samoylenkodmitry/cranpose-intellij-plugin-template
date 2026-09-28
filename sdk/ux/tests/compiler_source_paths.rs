@@ -77,7 +77,10 @@ fn cargo_workspace_library_and_generated_binary_resolve_to_editable_files() {
         })
         .collect();
     assert_eq!(
-        locations,
+        locations
+            .iter()
+            .map(|path| path.canonicalize().expect("editable file"))
+            .collect::<Vec<_>>(),
         [
             original.join(member).join("src/lib.rs"),
             original.join(member).join("src/screens/detail.rs")
