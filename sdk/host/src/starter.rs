@@ -8,6 +8,7 @@ use std::{
 };
 pub const SHOWCASE_REPOSITORY: &str = "https://github.com/samoylenkodmitry/cranpose-showcase";
 pub const SHOWCASE_REVISION: &str = "8b251cc0d668e078ebcee49fa01710e2fe35547e";
+pub const SHOWCASE_FRAMEWORK_VERSION: &str = "0.1.171";
 const SHOWCASE_ARCHIVE: &[u8] = include_bytes!("../assets/showcase.zip");
 const SHOWCASE_SHA256: &str = "2d0d8970585650bb292623259f121361e9b7edeb4746cf898f9c5a5fa4e59e86";
 
@@ -252,7 +253,10 @@ mod tests {
             .map(|v| v.as_str().expect("feature").to_owned())
             .collect::<Vec<_>>();
         assert_eq!(features, target.features);
-        assert!(manifest["dependencies"].get("cranpose").is_some());
+        assert_eq!(
+            manifest["dependencies"]["cranpose"].as_str(),
+            Some(SHOWCASE_FRAMEWORK_VERSION)
+        );
         let build = fs::read_to_string(root.join("CranposeBuild.toml"))
             .expect("local platform configuration")
             .parse::<toml_edit::DocumentMut>()
