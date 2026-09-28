@@ -104,7 +104,7 @@ pub fn run(options: Options) -> Result<()> {
         json!({"root":"/fixture","cache":"/cache","settings":{"inspect":true}}),
     )?;
     let mut resize_checks = if options.resize_rounds > 0 {
-        verify_text(&host, "Filter · name, text, source or modifier")?;
+        verify_text(&host, "Filter by name, text, source or modifier")?;
         resize_inspector(&host, options.resize_rounds, None)?
     } else {
         Vec::new()
@@ -487,7 +487,7 @@ fn resize_inspector(
             }
             // A layout side effect can precede modifier disposal. Request a fresh
             // inspection too, proving the renderer survives the completed frame.
-            verify_text(host, "Filter · name, text, source or modifier")?;
+            verify_text(host, "Filter by name, text, source or modifier")?;
             if let Some((first, anchor)) = retained {
                 verify_retained_rows(host, first, anchor)?;
             }
@@ -569,13 +569,11 @@ fn exercise_tree(host: &crate::hot_smoke::Host, nodes: &[Value]) -> Result<Value
     })?;
     scroll(distance)?;
     let top = verify_view(host, "first row after return", |view| visible(view, &first))?;
-    // The text field is immediately left of Clear and below its label.
-    let (clear_x, field_y) = center(text_node(&top, "Clear").context("Clear control")?);
-    let label_x = text_node(&top, "Filter · name, text, source or modifier")
-        .context("Filter label")?["x"]
-        .as_f64()
-        .context("Filter x")? as f32;
-    let field_x = (label_x + clear_x) / 2.0;
+    // The empty field shows its placeholder; clicking it focuses the field.
+    let (field_x, field_y) = center(
+        text_node(&top, "Filter by name, text, source or modifier")
+            .context("Filter placeholder")?,
+    );
     for kind in [3, 4] {
         host.send(Packet::new(kind).int(0).float(field_x).float(field_y))?;
     }
@@ -595,7 +593,7 @@ fn exercise_tree(host: &crate::hot_smoke::Host, nodes: &[Value]) -> Result<Value
             .context("Last label")?,
     )?;
     ensure!(
-        text_node(&details, "Item :42 ↗").is_some(),
+        text_node(&details, "Item :42").is_some(),
         "Selected row lost source navigation"
     );
     click(host, &details, "Layout")?;
