@@ -44,6 +44,7 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                 ),
                 ("persistent Cargo configuration", configuration),
                 ("native Cranpose rendering", native_ui),
+                ("native Studio menus", crate::popup::list_test),
                 ("preview UI reconnection", reconnect),
                 ("inline stability badges", inlays),
                 ("Cranpose authoring markers and wizard", authoring),
