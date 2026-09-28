@@ -4,6 +4,7 @@ mod editor;
 mod feedback;
 #[cfg(feature = "ide-tests")]
 mod ide_tests;
+pub mod inlays;
 pub mod jobs;
 pub mod jvm;
 mod model;
