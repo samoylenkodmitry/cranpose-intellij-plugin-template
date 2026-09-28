@@ -71,7 +71,7 @@ crates from this repository. There is no dependency back on Studio.
 
 | Shared crate | Purpose |
 |---|---|
-| `sdk/host` | JNI dispatch, native surfaces, lifecycle, editor and project integration |
+| `sdk/host` | JNI dispatch, native surfaces, lifecycle, [editor inlay batches](docs/editor-inlay-batching.md) and project integration |
 | `sdk/jvm-bridge` | JVM classfile generation in Rust |
 | `sdk/tools` | Packaging, SDK tests, native verification and release tools |
 | `sdk/ux` | Themes, searchable trees and change-only host message delivery |

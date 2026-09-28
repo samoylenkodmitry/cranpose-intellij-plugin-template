@@ -10,110 +10,169 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         &[],
     )?;
     let mut samples = vec![];
-    for count in [32, 256, 1024] {
-        let mut source = String::from("// 🦀 placement fixture\n#[composable]\nfn Card(){\n");
-        for index in 0..count {
-            source.push_str(&format!("    Text(\"label {index}\");\n"));
+    let fixtures = [
+        (32, 0),
+        (128, 0),
+        (256, 0),
+        (1024, 0),
+        (256, 360),
+        (1024, 1440),
+        (32, 30_000),
+        (128, 30_000),
+        (256, 30_000),
+        (1024, 30_000),
+    ];
+    // Fresh IDEs continue compiling their editor code after a short warm-up.
+    // Optimized profiling repeats in reverse order, then the original order,
+    // so sparse/dense conclusions do not depend on being first in the suite.
+    let rounds = if cfg!(debug_assertions) { 1 } else { 3 };
+    for round in 0..rounds {
+        let mut fixtures = fixtures.to_vec();
+        if round % 2 == 1 {
+            fixtures.reverse();
         }
-        source.push_str("}\n");
-        let mut catalog = Catalog::parse(&source)?;
-        ensure!(catalog.literals.len() == count, "Fixture catalog size");
-        let document = j.obj(
-            &factory,
-            "createDocument",
-            "(Ljava/lang/CharSequence;)Lcom/intellij/openapi/editor/Document;",
-            &[A::S(&source)],
-        )?;
-        let editor = j.obj(&factory, "createEditor", "(Lcom/intellij/openapi/editor/Document;Lcom/intellij/openapi/project/Project;)Lcom/intellij/openapi/editor/Editor;", &[A::O(&document), A::O(&project.object)])?;
-        let result = (|| -> Result<()> {
-            watch_editor(project, j, &editor)?;
-            place(project, j, &editor, "placement.rs", &catalog)?;
-            remember(project, j, &document, &source, &catalog)?;
-            let mut edit = 0;
-            for iteration in 0..9 {
-                let modes = if iteration % 2 == 0 {
-                    [true, false]
-                } else {
-                    [false, true]
-                };
-                for rebuild in modes {
-                    let identities = identities(project);
-                    let token = if edit % 2 == 0 {
-                        "\"label 🦀\""
-                    } else {
-                        "\"label x\""
-                    };
-                    edit += 1;
-                    let range = &catalog.literals[0].range;
-                    write(
-                        project,
-                        j,
-                        &document,
-                        range.start_utf16,
-                        range.end_utf16,
-                        token,
-                    )?;
-                    source.replace_range(range.start..range.end, token);
-                    catalog = Catalog::parse(&source)?;
-                    let started = Instant::now();
-                    if rebuild {
-                        clear_placed(project, j)?;
-                        place(project, j, &editor, "placement.rs", &catalog)?;
-                    } else {
-                        refresh_placed(project, j, &editor, "placement.rs", &catalog)?;
-                    }
-                    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-                    if !rebuild {
-                        ensure!(
-                            identities == self::identities(project),
-                            "Literal edit recreated anchors"
-                        );
-                    }
-                    let items = project
-                        .authoring
-                        .lock()
-                        .expect("authoring")
-                        .placed
-                        .iter()
-                        .filter_map(|p| p.literal.map(|id| (p.object.clone(), id)))
-                        .collect::<Vec<_>>();
-                    ensure!(items.len() == count, "Missing placement glyphs");
-                    for (object, id) in &items {
-                        ensure!(j.bool(object, "isValid")?, "Invalid placement glyph");
-                        ensure!(
-                            j.int(object, "getOffset")? as usize
-                                == catalog.literals[*id].range.end_utf16,
-                            "Incorrect Unicode glyph offset"
-                        );
-                        ensure!(
-                            j.int(object, "getWidthInPixels")? == 14,
-                            "Missing reserved glyph space"
-                        );
-                    }
-                    if iteration >= 2 {
-                        samples.push(
-                        json!({"glyphs":count,"iteration":iteration-2,"mode":if rebuild {"rebuild"} else {"reuse"},"replace_ms":elapsed_ms}),
-                    );
-                    }
-                    remember(project, j, &document, &source, &catalog)?;
-                }
+        for (count, padding) in fixtures {
+            let mut source = String::from("// 🦀 placement fixture\n#[composable]\nfn Card(){\n");
+            for index in 0..count {
+                source.push_str(&format!("    Text(\"label {index}\");\n"));
             }
-            Ok(())
-        })();
-        if result.is_err() && j.env.exception_check()? {
-            j.env.exception_describe()?;
-            j.env.exception_clear()?;
+            source.push_str("}\n");
+            source.push_str(&"// unrelated source padding\n".repeat(padding));
+            let mut catalog = Catalog::parse(&source)?;
+            ensure!(catalog.literals.len() == count, "Fixture catalog size");
+            let document = j.obj(
+                &factory,
+                "createDocument",
+                "(Ljava/lang/CharSequence;)Lcom/intellij/openapi/editor/Document;",
+                &[A::S(&source)],
+            )?;
+            let editor = j.obj(&factory, "createEditor", "(Lcom/intellij/openapi/editor/Document;Lcom/intellij/openapi/project/Project;)Lcom/intellij/openapi/editor/Editor;", &[A::O(&document), A::O(&project.object)])?;
+            let result = (|| -> Result<()> {
+                let model = j.obj(
+                    &editor,
+                    "getInlayModel",
+                    "()Lcom/intellij/openapi/editor/InlayModel;",
+                    &[],
+                )?;
+                crate::inlays::integration_test(j, &model)?;
+                if padding == 30_000 {
+                    ensure!(
+                        !batch_placement(j, &editor, &catalog)?,
+                        "Sparse file entered a batch"
+                    );
+                }
+                watch_editor(project, j, &editor)?;
+                place(project, j, &editor, "placement.rs", &catalog)?;
+                remember(project, j, &document, &source, &catalog)?;
+                let mut edit = 0;
+                for iteration in 0..9 {
+                    let modes = if iteration % 2 == 0 {
+                        ["unbatched", "batched", "automatic", "reuse"]
+                    } else {
+                        ["reuse", "automatic", "batched", "unbatched"]
+                    };
+                    for mode in modes {
+                        let identities = identities(project);
+                        let token = if edit % 2 == 0 {
+                            "\"label 🦀\""
+                        } else {
+                            "\"label x\""
+                        };
+                        edit += 1;
+                        let range = &catalog.literals[0].range;
+                        write(
+                            project,
+                            j,
+                            &document,
+                            range.start_utf16,
+                            range.end_utf16,
+                            token,
+                        )?;
+                        source.replace_range(range.start..range.end, token);
+                        catalog = Catalog::parse(&source)?;
+                        let started = Instant::now();
+                        let mut clear_ms = None;
+                        if mode != "reuse" {
+                            clear_placed(project, j)?;
+                            clear_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                            if mode == "automatic" {
+                                place(project, j, &editor, "placement.rs", &catalog)?;
+                            } else {
+                                place_with_batch(
+                                    project,
+                                    j,
+                                    &editor,
+                                    "placement.rs",
+                                    &catalog,
+                                    mode == "batched",
+                                )?;
+                            }
+                        } else {
+                            refresh_placed(project, j, &editor, "placement.rs", &catalog)?;
+                        }
+                        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                        if mode == "reuse" {
+                            ensure!(
+                                identities == self::identities(project),
+                                "Literal edit recreated anchors"
+                            );
+                        }
+                        let items = project
+                            .authoring
+                            .lock()
+                            .expect("authoring")
+                            .placed
+                            .iter()
+                            .filter_map(|p| p.literal.map(|id| (p.object.clone(), id)))
+                            .collect::<Vec<_>>();
+                        ensure!(items.len() == count, "Missing placement glyphs");
+                        for (object, id) in &items {
+                            ensure!(j.bool(object, "isValid")?, "Invalid placement glyph");
+                            ensure!(
+                                j.int(object, "getOffset")? as usize
+                                    == catalog.literals[*id].range.end_utf16,
+                                "Incorrect Unicode glyph offset"
+                            );
+                            ensure!(
+                                j.int(object, "getWidthInPixels")? == 14,
+                                "Missing reserved glyph space"
+                            );
+                        }
+                        if iteration >= 2 {
+                            samples.push(json!({
+                                "glyphs": count,
+                                "round": round,
+                                "padding_lines": padding,
+                                "source_bytes": source.len(),
+                                "iteration": iteration - 2,
+                                "mode": mode,
+                                "replace_ms": elapsed_ms,
+                                "clear_ms": clear_ms,
+                            }));
+                        }
+                        remember(project, j, &document, &source, &catalog)?;
+                    }
+                }
+                if count == 1024 && padding == 0 && round == 0 {
+                    caret_behavior(project, j, &editor, &catalog)?;
+                }
+                Ok(())
+            })();
+            if result.is_err() && j.env.exception_check()? {
+                j.env.exception_describe()?;
+                j.env.exception_clear()?;
+            }
+            let cleanup = detach(project, j);
+            let released = j.void(
+                &factory,
+                "releaseEditor",
+                "(Lcom/intellij/openapi/editor/Editor;)V",
+                &[A::O(&editor)],
+            );
+            result?;
+            cleanup?;
+            released?;
         }
-        let cleanup = detach(project, j);
-        let released = j.void(
-            &factory,
-            "releaseEditor",
-            "(Lcom/intellij/openapi/editor/Editor;)V",
-            &[A::O(&editor)],
-        );
-        result?;
-        cleanup?;
-        released?;
     }
     let output = j.static_obj(
         "java/lang/System",
@@ -128,6 +187,84 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         )?,
     )?;
     lifecycle(project, j, &factory)?;
+    Ok(())
+}
+
+fn caret_behavior(
+    project: &Arc<Project>,
+    j: &mut J<'_>,
+    editor: &O,
+    catalog: &Catalog,
+) -> Result<()> {
+    clear_placed(project, j)?;
+    let model = j.obj(
+        editor,
+        "getCaretModel",
+        "()Lcom/intellij/openapi/editor/CaretModel;",
+        &[],
+    )?;
+    let caret = j.obj(
+        &model,
+        "getPrimaryCaret",
+        "()Lcom/intellij/openapi/editor/Caret;",
+        &[],
+    )?;
+    let end = catalog.literals[0].range.end_utf16 as i32;
+    for offset in [0, end - 1, end] {
+        let mut positions = vec![];
+        for automatic in [false, true] {
+            clear_placed(project, j)?;
+            j.void(&caret, "moveToOffset", "(I)V", &[A::I(offset)])?;
+            j.void(&caret, "setSelection", "(II)V", &[A::I(0), A::I(offset)])?;
+            if automatic {
+                ensure!(
+                    batch_placement(j, editor, catalog)? == (offset != end),
+                    "Caret batching policy"
+                );
+                place(project, j, editor, "placement.rs", catalog)?;
+            } else {
+                place_with_batch(project, j, editor, "placement.rs", catalog, false)?;
+            }
+            let visual = j.obj(
+                &caret,
+                "getVisualPosition",
+                "()Lcom/intellij/openapi/editor/VisualPosition;",
+                &[],
+            )?;
+            positions.push((
+                j.int(&caret, "getOffset")?,
+                j.int(&caret, "getSelectionStart")?,
+                j.int(&caret, "getSelectionEnd")?,
+                j.field_int(&visual, "line")?,
+                j.field_int(&visual, "column")?,
+            ));
+        }
+        ensure!(
+            positions[0] == positions[1],
+            "Batch changed caret or selection: {positions:?}"
+        );
+    }
+    clear_placed(project, j)?;
+    j.void(&caret, "removeSelection", "()V", &[])?;
+    j.void(&caret, "moveToOffset", "(I)V", &[A::I(0)])?;
+    let visual = j.obj(
+        editor,
+        "offsetToVisualPosition",
+        "(I)Lcom/intellij/openapi/editor/VisualPosition;",
+        &[A::I(end)],
+    )?;
+    let secondary = j.obj(
+        &model,
+        "addCaret",
+        "(Lcom/intellij/openapi/editor/VisualPosition;)Lcom/intellij/openapi/editor/Caret;",
+        &[A::O(&visual)],
+    )?;
+    ensure!(!secondary.is_null(), "Secondary caret fixture");
+    ensure!(
+        !batch_placement(j, editor, catalog)?,
+        "Secondary caret was ignored"
+    );
+    j.void(&model, "removeSecondaryCarets", "()V", &[])?;
     Ok(())
 }
 

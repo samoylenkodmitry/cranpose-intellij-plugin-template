@@ -502,6 +502,61 @@ fn place(
     path: &str,
     catalog: &Catalog,
 ) -> Result<()> {
+    let batch = batch_placement(j, editor, catalog)?;
+    place_with_batch(project, j, editor, path, catalog, batch)
+}
+
+fn batch_placement(j: &mut J<'_>, editor: &O, catalog: &Catalog) -> Result<bool> {
+    let count = (catalog.literals.len() + catalog.references.len()).min(1024);
+    if count < 256 {
+        return Ok(false);
+    }
+    // Batch setup scans the document. A sparse 840 KB file was slower even
+    // with 1,024 glyphs. Restrict it to the measured dense-file range.
+    let document = j.obj(
+        editor,
+        "getDocument",
+        "()Lcom/intellij/openapi/editor/Document;",
+        &[],
+    )?;
+    if j.int(&document, "getTextLength")? as usize > count * 64 {
+        return Ok(false);
+    }
+    // IntelliJ documents different visual caret behavior for a batch at the
+    // caret's offset. Keep the established insertion behavior for every caret.
+    // Query this before entering the batch, where caret access is forbidden.
+    let model = j.obj(
+        editor,
+        "getCaretModel",
+        "()Lcom/intellij/openapi/editor/CaretModel;",
+        &[],
+    )?;
+    let carets = j.obj(&model, "getAllCarets", "()Ljava/util/List;", &[])?;
+    for index in 0..j.int(&carets, "size")? {
+        let caret = j.obj(&carets, "get", "(I)Ljava/lang/Object;", &[A::I(index)])?;
+        let offset = j.int(&caret, "getOffset")? as usize;
+        if catalog
+            .literals
+            .iter()
+            .map(|l| l.range.end_utf16)
+            .chain(catalog.references.iter().map(|r| r.range.end_utf16))
+            .take(1024)
+            .any(|end| end == offset)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn place_with_batch(
+    project: &Arc<Project>,
+    j: &mut J<'_>,
+    editor: &O,
+    path: &str,
+    catalog: &Catalog,
+    batch: bool,
+) -> Result<()> {
     let markup = j.obj(
         editor,
         "getMarkupModel",
@@ -564,33 +619,39 @@ fn place(
                 .references
                 .iter()
                 .map(|r| (r.literal, r.range.end_utf16)),
-        );
-    for (literal, end) in targets.take(1024) {
-        let id = jvm::register(|j, op, _| {
-            if op == "ValueGlyph.calcWidthInPixels" {
-                j.boxed_int(14)
+        )
+        .take(1024)
+        .collect::<Vec<_>>();
+    let project = project.clone();
+    let batch_model = model.clone();
+    crate::inlays::execute(j, &batch_model, batch, move |j| {
+        for (literal, end) in targets {
+            let id = jvm::register(|j, op, _| {
+                if op == "ValueGlyph.calcWidthInPixels" {
+                    j.boxed_int(14)
+                } else {
+                    j.null()
+                }
+            });
+            let renderer = j.new("dev/cranpose/rust/ValueGlyph", "(J)V", &[A::J(id)])?;
+            let inlay=j.obj(&model,"addInlineElement","(IZLcom/intellij/openapi/editor/EditorCustomElementRenderer;)Lcom/intellij/openapi/editor/Inlay;",&[A::I(end as i32),A::Z(true),A::O(&renderer)])?;
+            if inlay.is_null() {
+                jvm::unregister(id);
             } else {
-                j.null()
+                project
+                    .authoring
+                    .lock()
+                    .expect("authoring")
+                    .placed
+                    .push(Placed {
+                        object: inlay,
+                        callback: id,
+                        literal: Some(literal),
+                    });
             }
-        });
-        let renderer = j.new("dev/cranpose/rust/ValueGlyph", "(J)V", &[A::J(id)])?;
-        let inlay=j.obj(&model,"addInlineElement","(IZLcom/intellij/openapi/editor/EditorCustomElementRenderer;)Lcom/intellij/openapi/editor/Inlay;",&[A::I(end as i32),A::Z(true),A::O(&renderer)])?;
-        if inlay.is_null() {
-            jvm::unregister(id);
-        } else {
-            project
-                .authoring
-                .lock()
-                .expect("authoring")
-                .placed
-                .push(Placed {
-                    object: inlay,
-                    callback: id,
-                    literal: Some(literal),
-                });
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn ensure_panel(project: &Arc<Project>, j: &mut J<'_>) -> Result<Arc<Panel>> {
