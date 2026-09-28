@@ -6,11 +6,11 @@ edition.workspace = true
 license.workspace = true
 [dependencies]
 cranpose-plugin-authoring = { path = "../authoring" }
-cranpose-animation = { version = "0.1.171", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "8fa9ba77b24506d4351ca1fcea255e0ac64099ef" }
+cranpose-animation = { version = "0.1.172", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "29b1075da8fc4b8b15891061d13fe1b576843d59" }
 cranpose-plugin-ux = { path = "../ux" }
-cranpose = { version = "0.1.171", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "8fa9ba77b24506d4351ca1fcea255e0ac64099ef", features = ["embed"] }
-cranpose-core = { version = "0.1.171", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "8fa9ba77b24506d4351ca1fcea255e0ac64099ef" }
-cranpose-ui-graphics = { version = "0.1.171", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "8fa9ba77b24506d4351ca1fcea255e0ac64099ef" }
+cranpose = { version = "0.1.172", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "29b1075da8fc4b8b15891061d13fe1b576843d59", features = ["embed"] }
+cranpose-core = { version = "0.1.172", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "29b1075da8fc4b8b15891061d13fe1b576843d59" }
+cranpose-ui-graphics = { version = "0.1.172", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "29b1075da8fc4b8b15891061d13fe1b576843d59" }
 serde_json = "1"
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
