@@ -24,6 +24,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked -p cranpose-plugin-cache
       - run: cargo test --locked -p cranpose-plugin-authoring
+      - run: cargo test --locked -p cranpose-plugin-ux
       - run: cargo test --locked -p cranpose-plugin-host starter::tests
       - run: cargo test --locked -p cranpose-plugin-host model::tests
       - run: cargo test --locked -p cranpose-plugin-tools framework::tests

@@ -1,6 +1,89 @@
 use cranpose_plugin_authoring::{Catalog, runtime};
 
 #[test]
+fn byte_colors_are_one_live_color_and_keep_constructor_comments_and_integer_style() {
+    let source = "fn palette(){ Color::from_rgba_u8(\n0xffu8, /* green */ 0x80,\n0, 255); Color::from_rgb_u8(12,34,56); Color::rgb(0.1,0.2,0.3); }";
+    let catalog = Catalog::parse(source).expect("parse colors");
+    assert_eq!(catalog.literals.len(), 3);
+    assert!(catalog.literals.iter().all(|v| v.kind == "color"));
+    assert_eq!(
+        runtime::color_channels(&catalog.literals[0].value).expect("RGBA"),
+        [1.0, 128.0 / 255.0, 0.0, 1.0]
+    );
+    let edited = catalog
+        .replacement(source, 0, "0,1,0.5,0.25")
+        .expect("edit RGBA");
+    assert!(edited.contains("0x00u8, /* green */ 0xff,\n128, 64"));
+    assert_eq!(edited.lines().count(), source.lines().count());
+    assert_eq!(
+        Catalog::parse(&edited).expect("edited").schema,
+        catalog.schema
+    );
+    let rgb = catalog
+        .replacement(source, 1, "1,0,0.5,1")
+        .expect("edit RGB");
+    assert!(rgb.contains("Color::from_rgb_u8(255,0,128)"));
+    assert!(catalog.replacement(source, 1, "1,0,0,0.5").is_err());
+    let instrumented = catalog.instrument(source, "colors.rs");
+    syn::parse_file(&instrumented).expect("instrumented colors");
+    assert_eq!(instrumented.lines().count(), source.lines().count());
+    let excluded = "const C: Color = Color::from_rgba_u8(1,2,3,4); const fn c()->Color{Color::from_rgb_u8(1,2,3)} #[composable] fn App(){remember(||Color::from_rgb_u8(1,2,3));}";
+    assert!(
+        Catalog::parse(excluded)
+            .expect("excluded")
+            .literals
+            .is_empty()
+    );
+}
+
+#[test]
+fn byte_color_instrumentation_compiles_and_applies_quantized_runtime_channels() {
+    let source = "fn main(){let c=Color::from_rgba_u8(10u8,20,30,40); let rgb=Color::from_rgb_u8(10,20,30); let f=Color::rgb(0.1f32,0.2,0.3); println!(\"{:?}|{:?}|{:?}\",c,rgb,f);}";
+    let catalog = Catalog::parse(source).expect("catalog");
+    let shim = r#"
+#[derive(Debug)] struct Color(f32,f32,f32,f32);
+impl Color {
+fn from_rgba_u8(r:u8,g:u8,b:u8,a:u8)->Self{Self(r as f32/255.0,g as f32/255.0,b as f32/255.0,a as f32/255.0)}
+fn from_rgb_u8(r:u8,g:u8,b:u8)->Self{Self::from_rgba_u8(r,g,b,255)}
+fn rgb(r:f32,g:f32,b:f32)->Self{Self(r,g,b,1.0)}
+}
+mod __cranpose_dev {pub fn literal(_: &str,_:&str,_:usize,_:[f32;4])->[f32;4]{[1.0,0.0,128.0/255.0,64.0/255.0]}}
+"#;
+    let dir = std::env::temp_dir().join(format!(
+        "cranpose-byte-colors-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&dir).expect("directory");
+    let path = dir.join("colors.rs");
+    std::fs::write(
+        &path,
+        format!("{shim}\n{}", catalog.instrument(source, "colors.rs")),
+    )
+    .expect("source");
+    let binary = dir.join(format!("colors{}", std::env::consts::EXE_SUFFIX));
+    let compiled = std::process::Command::new("rustc")
+        .arg("--edition=2024")
+        .arg(&path)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("rustc");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let output = std::process::Command::new(&binary).output().expect("run");
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "Color(1.0, 0.0, 0.5019608, 0.2509804)|Color(1.0, 0.0, 0.5019608, 1.0)|Color(1.0, 0.0, 0.5019608, 1.0)"
+    );
+    std::fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
 fn multiline_color_edits_keep_comments_suffixes_and_source_lines() {
     let source = "#[composable] fn App(){ let c=Color::rgba(\n0.1f32, /* red 🙂 */ 0.2,\n 0.3, 1.0);\nText(c); }";
     let catalog = Catalog::parse(source).expect("catalog");

@@ -181,6 +181,11 @@ impl Catalog {
                 let mut text = source[literal.range.start..literal.range.end].to_owned();
                 let index = SourceIndex::new(&text);
                 let original: syn::ExprCall = syn::parse_str(&text)?;
+                let (bytes, count) = color_constructor(&original).expect("catalog color");
+                ensure!(
+                    count == 4 || channels[3] == 1.0,
+                    "This RGB constructor is opaque; use an RGBA constructor to edit opacity"
+                );
                 for ((argument, value), suffix) in original
                     .args
                     .iter()
@@ -189,7 +194,22 @@ impl Catalog {
                     .rev()
                 {
                     let range = index.range(argument.span());
-                    text.replace_range(range.start..range.end, &format!("{value:?}{suffix}"));
+                    let next = if bytes {
+                        let channel = (value * 255.0).round() as u8;
+                        let original = &text[range.start..range.end];
+                        if original.starts_with("0x") {
+                            format!("0x{channel:02x}{suffix}")
+                        } else if original.starts_with("0b") {
+                            format!("0b{channel:08b}{suffix}")
+                        } else if original.starts_with("0o") {
+                            format!("0o{channel:03o}{suffix}")
+                        } else {
+                            format!("{channel}{suffix}")
+                        }
+                    } else {
+                        format!("{value:?}{suffix}")
+                    };
+                    text.replace_range(range.start..range.end, &next);
                 }
                 text
             }
@@ -213,6 +233,41 @@ impl Catalog {
         for literal in &self.literals {
             if literal.kind == "color" {
                 let text = &source[literal.range.start..literal.range.end];
+                if let Ok(call) = syn::parse_str::<syn::ExprCall>(text)
+                    && let Some((bytes, count)) = color_constructor(&call)
+                    && (bytes || count == 3)
+                {
+                    let constructor = call.func.to_token_stream().to_string();
+                    let mut initial = call
+                        .args
+                        .iter()
+                        .map(|arg| {
+                            let arg = arg.to_token_stream();
+                            if bytes {
+                                format!("({arg}) as f32 / 255.0")
+                            } else {
+                                arg.to_string()
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    if count == 3 {
+                        initial.push("1.0f32".into());
+                    }
+                    let channels = ["__r", "__g", "__b", "__a"]
+                        .into_iter()
+                        .take(count)
+                        .map(|c| {
+                            if bytes {
+                                format!("({c} * 255.0).round() as u8")
+                            } else {
+                                c.into()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    replacements.push((literal.range.start, literal.range.end, 2, format!("{{ let [__r, __g, __b, __a] = crate::__cranpose_dev::literal({file_key:?}, {:?}, {}, [{}]); {constructor}({channels}) }}{}", self.schema, literal.id, initial.join(","), "\n".repeat(text.matches('\n').count()))));
+                    continue;
+                }
                 if let Some((constructor, arguments)) = text.split_once('(') {
                     let arguments = arguments.trim_end().trim_end_matches(')');
                     replacements.push((literal.range.start, literal.range.end, 2, format!("{{ let [__r, __g, __b, __a] = crate::__cranpose_dev::literal({file_key:?}, {:?}, {}, [{arguments}]); {constructor}(__r, __g, __b, __a) }}", self.schema, literal.id)));
@@ -295,6 +350,27 @@ fn attr(attrs: &[syn::Attribute], name: &str) -> bool {
     attrs
         .iter()
         .any(|a| a.path().segments.last().is_some_and(|s| s.ident == name))
+}
+fn color_constructor(call: &syn::ExprCall) -> Option<(bool, usize)> {
+    let syn::Expr::Path(path) = &*call.func else {
+        return None;
+    };
+    let name = path.path.segments.last()?.ident.to_string();
+    let shape = if name == "Color" {
+        (false, 4)
+    } else {
+        if path.path.segments.iter().rev().nth(1)?.ident != "Color" {
+            return None;
+        }
+        match name.as_str() {
+            "rgba" => (false, 4),
+            "rgb" => (false, 3),
+            "from_rgba_u8" => (true, 4),
+            "from_rgb_u8" => (true, 3),
+            _ => return None,
+        }
+    };
+    (call.args.len() == shape.1).then_some(shape)
 }
 impl Walk {
     fn literal(&mut self, expr: &syn::Expr) -> Option<Literal> {
@@ -393,20 +469,7 @@ impl VisitMut for Walk {
         if self.runtime
             && let syn::Expr::Call(call) = expr
             && let syn::Expr::Path(path) = &*call.func
-            && (path
-                .path
-                .segments
-                .last()
-                .is_some_and(|s| s.ident == "Color")
-                || (path.path.segments.last().is_some_and(|s| s.ident == "rgba")
-                    && path
-                        .path
-                        .segments
-                        .iter()
-                        .rev()
-                        .nth(1)
-                        .is_some_and(|s| s.ident == "Color")))
-            && call.args.len() == 4
+            && let Some((bytes, count)) = color_constructor(call)
         {
             let values = call
                 .args
@@ -414,13 +477,31 @@ impl VisitMut for Walk {
                 .map(|e| self.literal(e))
                 .collect::<Option<Vec<_>>>();
             if let Some(values) = values
-                && values.iter().all(|v| v.kind == "float")
+                && values.iter().all(|v| {
+                    if bytes {
+                        v.kind == "int"
+                            && v.value.parse::<u8>().is_ok()
+                            && matches!(v.suffix.as_str(), "" | "u8")
+                    } else {
+                        v.kind == "float"
+                    }
+                })
             {
-                let value = values
+                let mut channels = values
                     .iter()
-                    .map(|v| v.value.as_str())
-                    .collect::<Vec<_>>()
-                    .join(",");
+                    .map(|v| {
+                        if bytes {
+                            (f64::from(v.value.parse::<u8>().expect("checked byte")) / 255.0)
+                                .to_string()
+                        } else {
+                            v.value.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if count == 3 {
+                    channels.push("1.0".into());
+                }
+                let value = channels.join(",");
                 if runtime::color_channels(&value).is_some() {
                     let id = self.literals.len();
                     let suffix = values

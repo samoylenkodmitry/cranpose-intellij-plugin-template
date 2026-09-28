@@ -101,6 +101,10 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
                 "(Lcom/intellij/openapi/editor/event/EditorMouseEvent;)V",
             ),
             (
+                "mousePressed",
+                "(Lcom/intellij/openapi/editor/event/EditorMouseEvent;)V",
+            ),
+            (
                 "mouseClicked",
                 "(Lcom/intellij/openapi/editor/event/EditorMouseEvent;)V",
             ),
@@ -350,6 +354,7 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
             ("getComponent", "()Ljavax/swing/JComponent;"),
             ("getPreferredFocusedComponent", "()Ljavax/swing/JComponent;"),
             ("getName", "()Ljava/lang/String;"),
+            ("selectNotify", "()V"),
             ("getFile", "()Lcom/intellij/openapi/vfs/VirtualFile;"),
             (
                 "setState",

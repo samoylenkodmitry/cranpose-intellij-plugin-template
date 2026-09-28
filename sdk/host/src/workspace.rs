@@ -288,13 +288,17 @@ impl Workspace {
                 self.project
                     .set_property(j, "cranpose.studio", &request["value"].to_string())?
             }
-            "navigate" => project::navigate(
-                &self.project,
-                j,
-                &model::s(&request, "file"),
-                request["line"].as_i64().unwrap_or(1) as i32 - 1,
-                0,
-            )?,
+            "navigate" => {
+                let path = model::s(&request, "file");
+                project::navigate(
+                    &self.project,
+                    j,
+                    &path,
+                    request["line"].as_i64().unwrap_or(1) as i32 - 1,
+                    0,
+                )?;
+                self.follow_source(j, &path)?;
+            }
             "configure" => crate::run_configuration::create_selected(&self.project, j)?,
             "setupRust" => rust_setup(j)?,
             "export" => self.export(j)?,
@@ -722,6 +726,144 @@ impl Workspace {
         self.scope.clear();
         Ok(())
     }
+
+    fn follow_source(self: &Arc<Self>, j: &mut J<'_>, path: &str) -> Result<()> {
+        let editors = self
+            .project
+            .preview_editors
+            .lock()
+            .expect("preview editors")
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect::<Vec<_>>();
+        for editor in editors {
+            if Path::new(&editor.path) == Path::new(path) && !editor.closed.load(Ordering::Acquire)
+            {
+                editor.bind(j, self.clone())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A file tab owns a mounting point, while navigation can share a live workspace.
+/// Only the selected tab mounts its component; closing another tab cannot stop it.
+pub struct PreviewEditor {
+    project: Arc<Project>,
+    file: O,
+    path: String,
+    component: O,
+    home: Mutex<Option<Arc<Workspace>>>,
+    workspace: Mutex<Option<Arc<Workspace>>>,
+    closed: AtomicBool,
+}
+impl PreviewEditor {
+    fn new(project: Arc<Project>, j: &mut J<'_>, file: O) -> Result<Arc<Self>> {
+        let workspace = Workspace::new(project.clone(), j, file.clone())?;
+        let layout = j.new("java/awt/BorderLayout", "()V", &[])?;
+        let component = j.new(
+            "javax/swing/JPanel",
+            "(Ljava/awt/LayoutManager;)V",
+            &[A::O(&layout)],
+        )?;
+        let editor = Arc::new(Self {
+            project: project.clone(),
+            path: j.text(&file, "getPath")?,
+            file,
+            component,
+            home: Mutex::new(Some(workspace.clone())),
+            workspace: Mutex::new(Some(workspace)),
+            closed: AtomicBool::new(false),
+        });
+        project
+            .preview_editors
+            .lock()
+            .expect("preview editors")
+            .push(Arc::downgrade(&editor));
+        editor.mount(j)?;
+        Ok(editor)
+    }
+
+    fn workspace(&self) -> Option<Arc<Workspace>> {
+        self.workspace.lock().expect("preview workspace").clone()
+    }
+
+    fn mount(&self, j: &mut J<'_>) -> Result<()> {
+        if let Some(workspace) = self.workspace() {
+            let parent = j.obj(
+                workspace.component(),
+                "getParent",
+                "()Ljava/awt/Container;",
+                &[],
+            )?;
+            if !j.same(&parent, &self.component)? {
+                j.void(&self.component, "removeAll", "()V", &[])?;
+                j.obj(
+                    &self.component,
+                    "add",
+                    "(Ljava/awt/Component;)Ljava/awt/Component;",
+                    &[A::O(workspace.component())],
+                )?;
+                j.void(&self.component, "revalidate", "()V", &[])?;
+                j.void(&self.component, "repaint", "()V", &[])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn bind(&self, j: &mut J<'_>, workspace: Arc<Workspace>) -> Result<()> {
+        let previous = self
+            .workspace
+            .lock()
+            .expect("preview workspace")
+            .replace(workspace);
+        self.mount(j)?;
+        if let Some(previous) = previous {
+            self.release_if_unused(j, &previous)?;
+        }
+        Ok(())
+    }
+
+    fn release_if_unused(&self, j: &mut J<'_>, workspace: &Arc<Workspace>) -> Result<()> {
+        let in_use = self
+            .project
+            .preview_editors
+            .lock()
+            .expect("preview editors")
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .any(|editor| {
+                editor
+                    .workspace()
+                    .is_some_and(|current| Arc::ptr_eq(&current, workspace))
+                    || editor
+                        .home
+                        .lock()
+                        .expect("home workspace")
+                        .as_ref()
+                        .is_some_and(|home| Arc::ptr_eq(home, workspace))
+            });
+        if !in_use {
+            workspace.dispose(j)?;
+        }
+        Ok(())
+    }
+
+    fn dispose(&self, j: &mut J<'_>) -> Result<()> {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let workspace = self.workspace.lock().expect("preview workspace").take();
+        let home = self.home.lock().expect("home workspace").take();
+        j.void(&self.component, "removeAll", "()V", &[])?;
+        if let Some(workspace) = workspace {
+            self.release_if_unused(j, &workspace)?;
+        }
+        if let Some(home) = home {
+            self.release_if_unused(j, &home)?;
+        }
+        Ok(())
+    }
 }
 pub fn bounds(j: &mut J<'_>, object: &O, x: i32, y: i32, width: i32, height: i32) -> Result<()> {
     j.void(
@@ -732,19 +874,41 @@ pub fn bounds(j: &mut J<'_>, object: &O, x: i32, y: i32, width: i32, height: i32
     )
 }
 pub fn create_editor(project: Arc<Project>, j: &mut J<'_>, file: O) -> Result<O> {
-    let workspace = Workspace::new(project.clone(), j, file.clone())?;
+    let editor = PreviewEditor::new(project.clone(), j, file.clone())?;
+    let weak = Arc::downgrade(&editor);
+    let hierarchy = project.scope.register(move |j, op, _| {
+        if op == "Callback.hierarchyChanged"
+            && let Some(editor) = weak.upgrade()
+            && j.bool(&editor.component, "isShowing")?
+        {
+            editor.mount(j)?;
+        }
+        j.null()
+    });
+    let listener = jvm::callback(j, hierarchy)?;
+    j.void(
+        &editor.component,
+        "addHierarchyListener",
+        "(Ljava/awt/event/HierarchyListener;)V",
+        &[A::O(&listener)],
+    )?;
     let id_cell = Arc::new(std::sync::atomic::AtomicI64::new(0));
     let captured = id_cell.clone();
     let id = project.scope.register(move |j, op, _| match op {
         "PreviewEditor.getComponent" | "PreviewEditor.getPreferredFocusedComponent" => {
-            Ok(workspace.component().clone())
+            Ok(editor.component.clone())
         }
         "PreviewEditor.getName" => j.string("Cranpose"),
-        "PreviewEditor.getFile" => Ok(workspace.source.clone()),
+        "PreviewEditor.selectNotify" => {
+            editor.mount(j)?;
+            j.null()
+        }
+        "PreviewEditor.getFile" => Ok(editor.file.clone()),
         "PreviewEditor.isModified" => j.boxed_bool(false),
-        "PreviewEditor.isValid" => j.boxed_bool(!workspace.closed.load(Ordering::Acquire)),
+        "PreviewEditor.isValid" => j.boxed_bool(!editor.closed.load(Ordering::Acquire)),
         "PreviewEditor.dispose" => {
-            workspace.dispose(j)?;
+            editor.dispose(j)?;
+            jvm::unregister(hierarchy);
             jvm::unregister(captured.load(Ordering::Acquire));
             j.null()
         }
@@ -774,15 +938,17 @@ pub fn show(
     target: Option<&Target>,
 ) -> Result<()> {
     reveal_source(project, j, path)?;
-    let workspaces = project
-        .workspaces
+    let editors = project
+        .preview_editors
         .lock()
         .expect("workspaces")
         .iter()
         .filter_map(std::sync::Weak::upgrade)
         .collect::<Vec<_>>();
-    for workspace in workspaces {
-        if workspace.source_path == path {
+    for editor in editors {
+        if Path::new(&editor.path) == Path::new(path)
+            && let Some(workspace) = editor.workspace()
+        {
             if let Some(function) = function {
                 workspace.command(json!({"action":"showFunction","name":function}));
             }
@@ -1062,9 +1228,84 @@ pub fn integration_test(project: Arc<Project>, j: &mut J<'_>) -> Result<()> {
             state.active.is_none() && state.candidate.is_none(),
             "Controller restart unexpectedly launched an application"
         );
+        drop(state);
+        editor_navigation_test(&project, j, &workspace)?;
         Ok(())
     })();
     workspace.dispose(j)?;
     project.set_property(j, "cranpose.studio", &saved)?;
+    result
+}
+
+#[cfg(feature = "ide-tests")]
+fn editor_navigation_test(
+    project: &Arc<Project>,
+    j: &mut J<'_>,
+    workspace: &Arc<Workspace>,
+) -> Result<()> {
+    use anyhow::ensure;
+    let first_file = j.new(
+        "com/intellij/testFramework/LightVirtualFile",
+        "(Ljava/lang/String;Ljava/lang/CharSequence;)V",
+        &[A::S("first.rs"), A::S("fn first() {}")],
+    )?;
+    let second_file = j.new(
+        "com/intellij/testFramework/LightVirtualFile",
+        "(Ljava/lang/String;Ljava/lang/CharSequence;)V",
+        &[A::S("second.rs"), A::S("fn second() {}")],
+    )?;
+    let first = PreviewEditor::new(project.clone(), j, first_file)?;
+    let second = PreviewEditor::new(project.clone(), j, second_file)?;
+    let result = (|| -> Result<()> {
+        first.bind(j, workspace.clone())?;
+        workspace.follow_source(j, &second.path)?;
+        ensure!(
+            Arc::ptr_eq(
+                &second.workspace().context("destination workspace")?,
+                workspace
+            ),
+            "Navigation replaced the running workspace"
+        );
+        let parent = j.obj(
+            workspace.component(),
+            "getParent",
+            "()Ljava/awt/Container;",
+            &[],
+        )?;
+        ensure!(
+            j.same(&parent, &second.component)?,
+            "Destination did not display the existing preview"
+        );
+        first.mount(j)?;
+        let parent = j.obj(
+            workspace.component(),
+            "getParent",
+            "()Ljava/awt/Container;",
+            &[],
+        )?;
+        ensure!(
+            j.same(&parent, &first.component)?,
+            "Returning to source lost its shared preview"
+        );
+        second.mount(j)?;
+        first.dispose(j)?;
+        ensure!(
+            !workspace.closed.load(Ordering::Acquire),
+            "Closing origin stopped the destination preview"
+        );
+        ensure!(
+            workspace.state.lock().expect("workspace").checkpoint["selected"]
+                == "retained-selection",
+            "Source navigation lost selection"
+        );
+        second.dispose(j)?;
+        ensure!(
+            workspace.closed.load(Ordering::Acquire),
+            "Last editor did not release its preview"
+        );
+        Ok(())
+    })();
+    first.dispose(j)?;
+    second.dispose(j)?;
     result
 }

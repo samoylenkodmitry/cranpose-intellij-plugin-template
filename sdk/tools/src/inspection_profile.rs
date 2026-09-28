@@ -40,7 +40,7 @@ pub struct Options {
     /// Exercise end-of-list scrolling, collapse at the end and expansion.
     #[arg(long)]
     exercise_tree: bool,
-    /// Verify hidden/paused inspection cannot retain live bounds or intercept clicks.
+    /// Verify independent full-preview picking and fresh bounds after panel changes.
     #[arg(long)]
     exercise_selection: bool,
     /// Move the inspector between side and bottom layouts after the CPU samples.
@@ -354,8 +354,25 @@ fn exercise_selection(host: &crate::hot_smoke::Host) -> Result<Value> {
     selection_placement(host, "active Pick", |value| value["pick"] == true)?;
     let view = verify_text(host, "Inspect")?;
     click(host, &view, "Inspect")?;
-    let hidden = selection_placement(host, "hidden bounds and released Pick", |value| {
-        value["selected"].is_null() && value["pick"] == false
+    let expanded = selection_placement(
+        host,
+        "expanded preview awaiting fresh Pick geometry",
+        |value| value["selected"].is_null() && value["pick"] == false,
+    )?;
+    snapshot(host, &nodes, 1_100_000)?;
+    selection_placement(host, "Pick remains active with inspector closed", |value| {
+        value["pick"] == true && value["selected"]["x"].as_f64() == Some(12.0)
+    })?;
+    let view = verify_text(host, "Pick")?;
+    ensure!(
+        text_node(&view, "Pause").is_none(),
+        "Picking reopened the inspector"
+    );
+    click(host, &view, "Pick")?;
+    let hidden = selection_placement(host, "both inspector and Pick disabled", |value| {
+        value["selected"].is_null()
+            && value["pick"] == false
+            && value["viewport"] == expanded["viewport"]
     })?;
     // Wait through more than one normal polling interval. Hidden inspection must
     // not request snapshots just to keep an invisible selection current.
@@ -413,7 +430,7 @@ fn exercise_selection(host: &crate::hot_smoke::Host) -> Result<Value> {
         value["selected"].is_null()
     })?;
     Ok(
-        json!({"hideClearsBounds":true,"hideDisablesPick":true,"hiddenRequests":hidden_requests,
+        json!({"hideWaitsForFreshBounds":true,"pickWithoutInspector":true,"hiddenRequests":hidden_requests,
         "reopenWaitsForSnapshot":true,"reopenedViewport":reopened["viewport"],
         "lateReplyRejected":true,"freshBounds":true,"pauseClearsBounds":true,
         "resumeRefreshesBounds":true,"removedNodeClearsBounds":true}),
