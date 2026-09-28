@@ -2,6 +2,7 @@ mod authoring_smoke;
 mod bridge;
 mod choice_smoke;
 mod control_smoke;
+mod framework;
 mod hot_smoke;
 mod ide_test;
 mod inspection_profile;
@@ -22,8 +23,8 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Task {
-    /// Update UI framework dependencies in this checkout for the nightly compatibility job.
-    UseFrameworkMain,
+    /// Override the complete framework graph in a disposable compatibility checkout.
+    UseFrameworkMain(framework::Options),
     FetchIde {
         #[arg(long, default_value = "idea")]
         product: String,
@@ -71,7 +72,7 @@ pub fn run_cli(config: BuildConfig) -> Result<()> {
         .set(config)
         .map_err(|_| anyhow::anyhow!("Build tools were already configured"))?;
     match Cli::parse().command {
-        Task::UseFrameworkMain => use_framework_main(),
+        Task::UseFrameworkMain(options) => framework::run(&root(), options),
         Task::FetchIde { product, version } => release::fetch_ide(&product, &version),
         Task::IdeTest { ide, profile } => ide_test::run(&ide, profile),
         Task::Release(task) => release::run(task),
@@ -230,26 +231,4 @@ fn bridge_test(java: Option<PathBuf>, ide: Option<PathBuf>) -> Result<()> {
         .arg("dev.cranpose.rust.Probe"))?;
     println!("Verified {} generated bridge classes", names.len());
     Ok(())
-}
-
-fn use_framework_main() -> Result<()> {
-    let path = root().join("ui/Cargo.toml");
-    let mut doc = fs::read_to_string(&path)?.parse::<toml_edit::DocumentMut>()?;
-    for name in [
-        "cranpose",
-        "cranpose-core",
-        "cranpose-animation",
-        "cranpose-ui-graphics",
-    ] {
-        if let Some(value) = doc["dependencies"].get_mut(name) {
-            let mut table = value.as_inline_table().cloned().unwrap_or_default();
-            table.remove("version");
-            table.remove("rev");
-            table.insert("git", "https://github.com/samoylenkodmitry/Cranpose".into());
-            table.insert("branch", "main".into());
-            *value = toml_edit::value(table);
-        }
-    }
-    fs::write(path, doc.to_string())?;
-    run(Command::new("cargo").current_dir(root()).arg("update"))
 }

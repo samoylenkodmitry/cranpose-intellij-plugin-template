@@ -14,7 +14,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libxkbcommon-dev libwayland-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo run -p cranpose-template-tools -- use-framework-main
+      - run: cargo run --locked -p cranpose-template-tools -- use-framework-main --report framework-compatibility.json
       - run: cargo test --locked --no-default-features --workspace
       - run: cargo run --locked -p cranpose-template-tools -- fetch-ide
       - run: cargo run --locked -p cranpose-template-tools -- ide-test --ide "$CRANPOSE_TEST_IDE"
@@ -23,6 +23,9 @@ jobs:
         with:
           name: framework-compatibility-evidence
           path: |
+            framework-compatibility.json
+            Cargo.toml
+            Cargo.lock
             target/ide-tests/**/evidence
             target/ide-tests/**/console.log
           if-no-files-found: ignore
