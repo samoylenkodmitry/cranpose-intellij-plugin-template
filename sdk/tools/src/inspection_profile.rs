@@ -383,6 +383,12 @@ fn exercise_selection(host: &crate::hot_smoke::Host) -> Result<Value> {
         })?;
     // A delayed response from before hiding must not reactivate the old rectangle.
     snapshot(host, &nodes, 1_000_000)?;
+    // Force a subsequent composition in protocol order, so this assertion does
+    // not depend on whether an incorrect rectangle was painted within a timeout.
+    message(host, "studio.viewport", json!({"width":1002,"height":800}))?;
+    selection_placement(host, "late reply remains fenced after reflow", |value| {
+        value["viewport"] != reopened["viewport"] && value["selected"].is_null()
+    })?;
     let view = verify_text(host, "Pause")?;
     let mut moved = nodes.clone();
     moved[0]["x"] = json!(64);
@@ -409,7 +415,8 @@ fn exercise_selection(host: &crate::hot_smoke::Host) -> Result<Value> {
     Ok(
         json!({"hideClearsBounds":true,"hideDisablesPick":true,"hiddenRequests":hidden_requests,
         "reopenWaitsForSnapshot":true,"reopenedViewport":reopened["viewport"],
-        "freshBounds":true,"pauseClearsBounds":true,"resumeRefreshesBounds":true,"removedNodeClearsBounds":true}),
+        "lateReplyRejected":true,"freshBounds":true,"pauseClearsBounds":true,
+        "resumeRefreshesBounds":true,"removedNodeClearsBounds":true}),
     )
 }
 
