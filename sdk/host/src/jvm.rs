@@ -354,6 +354,47 @@ fn later_with_modality(
     Ok(())
 }
 
+#[cfg(feature = "ide-tests")]
+pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
+    use std::{sync::mpsc, time::Duration};
+    let (sent, received) = mpsc::sync_channel(1);
+    let scope = Scope::default();
+    let id = scope.register(move |j, _, _| {
+        let sent = sent.clone();
+        later_non_modal(j, move |j| {
+            let result = (|| -> Result<()> {
+                let app = j.application()?;
+                anyhow::ensure!(
+                    j.bool(&app, "isWriteIntentLockAcquired")?,
+                    "Missing write intent"
+                );
+                let manager = j.static_obj(
+                    "com/intellij/openapi/fileEditor/FileDocumentManager",
+                    "getInstance",
+                    "()Lcom/intellij/openapi/fileEditor/FileDocumentManager;",
+                    &[],
+                )?;
+                j.void(&manager, "saveAllDocuments", "()V", &[])
+            })();
+            sent.send(result.map_err(|e| format!("{e:#}")))?;
+            Ok(())
+        })?;
+        j.null()
+    });
+    let runnable = callback(j, id)?;
+    // Match a native panel's ordinary Swing event, without acquiring the IDE
+    // lock before entry. The helper must establish the correct save context.
+    j.static_void(
+        "javax/swing/SwingUtilities",
+        "invokeLater",
+        "(Ljava/lang/Runnable;)V",
+        &[A::O(&runnable)],
+    )?;
+    received
+        .recv_timeout(Duration::from_secs(10))?
+        .map_err(anyhow::Error::msg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

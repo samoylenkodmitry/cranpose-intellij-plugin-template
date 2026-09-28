@@ -35,6 +35,10 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                     crate::jobs::integration_test,
                 ),
                 (
+                    "non-modal document-save boundary",
+                    crate::jvm::integration_test,
+                ),
+                (
                     "transparent editor overlay preserves source",
                     crate::surface::Surface::test_overlay_paint,
                 ),
