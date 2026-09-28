@@ -29,6 +29,18 @@ pub struct Palette {
     pub on_accent: Color,
 }
 
+impl Palette {
+    /// A subdued selection fill derived from the current IDE colors.
+    pub fn selection(self) -> Color {
+        Color(
+            self.accent.0 * 0.18 + self.background.0 * 0.82,
+            self.accent.1 * 0.18 + self.background.1 * 0.82,
+            self.accent.2 * 0.18 + self.background.2 * 0.82,
+            1.0,
+        )
+    }
+}
+
 pub use cranpose_plugin_ux::IdeTheme;
 
 impl From<cranpose_plugin_ux::Palette> for Palette {

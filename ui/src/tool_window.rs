@@ -103,6 +103,7 @@ pub fn ToolWindow() {
             );
             EffectsCard(palette, orb, editor_effects, style);
             EditorCard(palette, current, recent);
+            crate::tasks::BackgroundTask(palette);
             MessageCard(palette, draft);
         },
     );

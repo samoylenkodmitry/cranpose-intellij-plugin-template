@@ -58,7 +58,8 @@ repackaging and restarting the IDE.
 | `ui/src/tool_window.rs` | Cranpose tool window |
 | `ui/src/effects.rs`, `effects.wgsl` | Five editor effect styles |
 | `ui/src/orb.rs` | Draggable transparent shader window |
-| `ui/src/ide.rs` | JSON channel contract |
+| `sdk/ui/src/ide.rs` | Shared IDE palette and JSON channel helpers |
+| `ui/src/tasks.rs`, `host/src/tasks.rs` | Cancellable project task example |
 | `host/src/lib.rs` | Rust JNI entry point and optional custom host messages |
 | `xtask/src/main.rs` | Plugin identity and shared Rust build tools |
 | `plugin/src/main/resources/META-INF/plugin.xml` | SDK extension registration |
@@ -74,6 +75,7 @@ crates from this repository. There is no dependency back on Studio.
 | `sdk/jvm-bridge` | JVM classfile generation in Rust |
 | `sdk/tools` | Packaging, SDK tests, native verification and release tools |
 | `sdk/ux` | Themes, searchable trees and change-only host message delivery |
+| `sdk/ui` | [Cranpose controls, task output and IDE helpers](docs/shared-ui-and-jobs.md) |
 | `sdk/cache` | [Generated assets and private dependency caches](sdk/cache/README.md) |
 | `sdk/process` | [Owned process trees, bounded shutdown and cancellation](sdk/process/README.md) |
 | `sdk/watch` | Bounded, deduplicated file-change batches with quiet and maximum deadlines |

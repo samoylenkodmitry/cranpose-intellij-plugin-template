@@ -1,8 +1,91 @@
 //! One cancellable background operation per project. Workers never access the JVM.
 use crate::{
+    jvm,
     jvm::{J, O},
     project::Project,
 };
+
+/// A plugin prepares its own typed request; the SDK owns IDE scheduling,
+/// document saving, trust checks, cancellation and completion reporting.
+pub enum Operation {
+    Cancel,
+    Run {
+        save_documents: bool,
+        worker: Box<dyn FnOnce(Context) -> Result<()> + Send>,
+    },
+}
+impl Operation {
+    pub fn run(
+        save_documents: bool,
+        worker: impl FnOnce(Context) -> Result<()> + Send + 'static,
+    ) -> Self {
+        Self::Run {
+            save_documents,
+            worker: Box::new(worker),
+        }
+    }
+}
+
+/// Route a panel message safely, including messages received from a Swing
+/// timer without write intent. Preparation and optional saving run later in
+/// the IDE's non-modal context; only the worker runs off the IDE thread.
+/// Unknown channels return false so another handler can process them.
+pub fn handle_message(
+    j: &mut J<'_>,
+    object: &O,
+    expected_channel: &'static str,
+    channel: &str,
+    payload: &str,
+    prepare: impl Fn(&str) -> Result<Operation> + Send + Sync + 'static,
+) -> Result<bool> {
+    if channel != expected_channel {
+        return Ok(false);
+    }
+    let project = Project::get(j, object)?;
+    let payload = payload.to_owned();
+    jvm::later_non_modal(j, move |j| {
+        if project.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let result = (|| -> Result<()> {
+            match prepare(&payload)? {
+                Operation::Cancel => cancel_project(&project),
+                Operation::Run {
+                    save_documents,
+                    worker,
+                } => {
+                    ensure!(
+                        project.trusted(j)?,
+                        "Trust the project before starting tools"
+                    );
+                    if save_documents {
+                        let manager = j.static_obj(
+                            "com/intellij/openapi/fileEditor/FileDocumentManager",
+                            "getInstance",
+                            "()Lcom/intellij/openapi/fileEditor/FileDocumentManager;",
+                            &[],
+                        )?;
+                        j.void(&manager, "saveAllDocuments", "()V", &[])?;
+                    }
+                    start_project(&project, expected_channel, worker)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            publish(
+                j,
+                &project.object,
+                expected_channel,
+                &json!({
+                    "type":"job_finished", "error":format!("{error:#}")
+                }),
+            )?;
+        }
+        Ok(())
+    })?;
+    Ok(true)
+}
 use anyhow::{Result, ensure};
 use cranpose_plugin_process::Cancellation;
 use serde_json::{Value, json};
@@ -62,7 +145,7 @@ fn start_project(
         let mut active = project.job.lock().expect("project job");
         ensure!(
             active.is_none(),
-            "A platform operation is already running; cancel or wait for it to finish"
+            "An operation is already running; cancel or wait for it to finish"
         );
         *active = Some(cancel.clone());
     }
