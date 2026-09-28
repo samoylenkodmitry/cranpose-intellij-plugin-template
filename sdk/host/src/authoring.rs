@@ -93,6 +93,12 @@ pub fn install(project: &Arc<Project>, j: &mut J<'_>, multicaster: &O) -> Result
         Ok(())
     })?;
     project.authoring.lock().expect("authoring").wake = Some(wake);
+    let callback = mouse_listener(project, j)?;
+    j.void(multicaster, "addEditorMouseListener", "(Lcom/intellij/openapi/editor/event/EditorMouseListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])?;
+    j.void(multicaster, "addEditorMouseMotionListener", "(Lcom/intellij/openapi/editor/event/EditorMouseMotionListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])
+}
+
+fn mouse_listener(project: &Arc<Project>, j: &mut J<'_>) -> Result<O> {
     let weak = Arc::downgrade(project);
     let id = project.scope.register(move |j, op, args| {
         if let Some(project) = weak.upgrade() {
@@ -107,9 +113,7 @@ pub fn install(project: &Arc<Project>, j: &mut J<'_>, multicaster: &O) -> Result
         }
         j.null()
     });
-    let callback = jvm::callback(j, id)?;
-    j.void(multicaster, "addEditorMouseListener", "(Lcom/intellij/openapi/editor/event/EditorMouseListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])?;
-    j.void(multicaster, "addEditorMouseMotionListener", "(Lcom/intellij/openapi/editor/event/EditorMouseMotionListener;Lcom/intellij/openapi/Disposable;)V", &[A::O(&callback), A::O(&project.object)])
+    jvm::callback(j, id)
 }
 
 /// Only the editor already watched by this project can need a new parse.
@@ -1682,7 +1686,13 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             ],
         )?;
         let clicked=j.new("com/intellij/openapi/editor/event/EditorMouseEvent","(Lcom/intellij/openapi/editor/Editor;Ljava/awt/event/MouseEvent;Lcom/intellij/openapi/editor/event/EditorMouseEventArea;)V",&[A::O(&editor),A::O(&click),A::O(&area)])?;
-        pointer(project, j, &clicked, true)?;
+        let listener = mouse_listener(project, j)?;
+        j.void(
+            &listener,
+            "mousePressed",
+            "(Lcom/intellij/openapi/editor/event/EditorMouseEvent;)V",
+            &[A::O(&clicked)],
+        )?;
         ensure!(
             !j.bool(&clicked, "isConsumed")?,
             "Source press was consumed"
