@@ -43,6 +43,13 @@ cooperate with cancellation. For subprocesses, use `cranpose-plugin-process` and
 its owned, bounded process-tree shutdown. Project disposal cancels active work
 and suppresses subsequent UI delivery.
 
+For a long-running application, use `cranpose_plugin_process::execute_observed`.
+It sends `ExecutionEvent::Started { pid }` after successful OS process creation,
+before any `Output` event. Forward that notification as a stage such as
+"Application running". It does not establish first paint or application readiness.
+Failed spawn and pre-cancellation send no start event. The existing `execute`
+API keeps its output-only callback; both APIs share cancellation and tree cleanup.
+
 ## UI contract
 
 Call `TaskState::begin` before sending a request. Feed received JSON to
