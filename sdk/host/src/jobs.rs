@@ -96,6 +96,18 @@ pub fn cancel(j: &mut J<'_>, object: &O) -> Result<()> {
     cancel_project(&project);
     Ok(())
 }
+
+/// Send a synchronous validation result without starting a worker.
+pub fn publish(j: &mut J<'_>, object: &O, channel: &str, value: &Value) -> Result<()> {
+    let project = Project::get(j, object)?;
+    if !project.closed.load(Ordering::Acquire) {
+        let payload = value.to_string();
+        for panel in project.live_panels() {
+            panel.message(channel, &payload);
+        }
+    }
+    Ok(())
+}
 pub(crate) fn cancel_project(project: &Project) {
     if let Some(cancel) = project.job.lock().expect("project job").as_ref() {
         cancel.cancel();
