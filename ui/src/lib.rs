@@ -6,9 +6,10 @@
 
 pub mod aurora;
 pub mod effects;
-pub mod ide;
+pub use cranpose_plugin_ui::ide;
 pub mod orb;
 pub mod shader;
+pub mod tasks;
 pub mod tool_window;
 
 pub use tool_window::ToolWindow;

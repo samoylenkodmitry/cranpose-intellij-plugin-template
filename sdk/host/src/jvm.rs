@@ -357,6 +357,8 @@ fn later_with_modality(
 #[cfg(feature = "ide-tests")]
 pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
     use std::sync::mpsc;
+    let project = crate::ide_tests::project(j)?;
+    let (worker_done, worker_result) = mpsc::sync_channel(1);
     let (sent, received) = mpsc::sync_channel(1);
     let toolkit = j.static_obj(
         "java/awt/Toolkit",
@@ -379,6 +381,35 @@ pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
     let scope = Scope::default();
     let completion = event_loop.clone();
     let id = scope.register(move |j, _, _| {
+        use crate::jobs::{Operation, handle_message};
+        anyhow::ensure!(
+            !handle_message(j, &project.object, "test.job", "other.channel", "", |_| {
+                anyhow::bail!("An unrelated channel reached the parser")
+            })?,
+            "Unrelated channel was consumed"
+        );
+        let worker_done = worker_done.clone();
+        handle_message(
+            j,
+            &project.object,
+            "test.job",
+            "test.job",
+            "run",
+            move |_| {
+                let worker_done = worker_done.clone();
+                Ok(Operation::run(true, move |context| {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while !context.cancel.is_cancelled() && std::time::Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    worker_done.send(context.cancel.is_cancelled())?;
+                    Ok(())
+                }))
+            },
+        )?;
+        handle_message(j, &project.object, "test.job", "test.job", "cancel", |_| {
+            Ok(Operation::Cancel)
+        })?;
         let sent = sent.clone();
         let completion = completion.clone();
         later_non_modal(j, move |j| {
@@ -431,7 +462,12 @@ pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
         received
             .try_recv()
             .context("Document save callback did not complete")?
-            .map_err(anyhow::Error::msg)
+            .map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            worker_result.recv_timeout(std::time::Duration::from_secs(6))?,
+            "Queued cancellation did not reach the saved-document worker"
+        );
+        Ok(())
     })();
     j.void(&timer, "stop", "()V", &[])?;
     result

@@ -1,0 +1,16 @@
+[package]
+name = "cranpose-plugin-ui"
+description = "Shared Cranpose UI controls and task output for native IntelliJ plugins"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cranpose = { version = "0.1.171", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "8fa9ba77b24506d4351ca1fcea255e0ac64099ef", features = ["embed"] }
+cranpose-core = { version = "0.1.171", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "8fa9ba77b24506d4351ca1fcea255e0ac64099ef" }
+cranpose-plugin-ux = { path = "../ux" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

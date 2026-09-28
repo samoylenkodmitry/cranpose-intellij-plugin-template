@@ -1,5 +1,5 @@
 [workspace]
-members = ["ui", "host", "xtask", "sdk/host", "sdk/jvm-bridge", "sdk/tools", "sdk/ux", "sdk/watch", "sdk/process", "sdk/cache", "sdk/authoring", "sdk/authoring-ui"]
+members = ["ui", "host", "xtask", "sdk/host", "sdk/jvm-bridge", "sdk/tools", "sdk/ux", "sdk/ui", "sdk/watch", "sdk/process", "sdk/cache", "sdk/authoring", "sdk/authoring-ui"]
 resolver = "3"
 
 [workspace.package]

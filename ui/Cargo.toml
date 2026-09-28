@@ -21,6 +21,7 @@ default = ["desktop"]
 desktop = ["cranpose/desktop"]
 
 [dependencies]
+cranpose-plugin-ui = { path = "../sdk/ui" }
 cranpose-plugin-authoring-ui = { path = "../sdk/authoring-ui" }
 cranpose-plugin-ux = { path = "../sdk/ux" }
 cranpose = { version = "0.1.171", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "8fa9ba77b24506d4351ca1fcea255e0ac64099ef", features = ["embed"] }
