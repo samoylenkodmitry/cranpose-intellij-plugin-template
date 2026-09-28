@@ -354,6 +354,89 @@ fn later_with_modality(
     Ok(())
 }
 
+#[cfg(feature = "ide-tests")]
+pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
+    use std::sync::mpsc;
+    let (sent, received) = mpsc::sync_channel(1);
+    let toolkit = j.static_obj(
+        "java/awt/Toolkit",
+        "getDefaultToolkit",
+        "()Ljava/awt/Toolkit;",
+        &[],
+    )?;
+    let queue = j.obj(
+        &toolkit,
+        "getSystemEventQueue",
+        "()Ljava/awt/EventQueue;",
+        &[],
+    )?;
+    let event_loop = j.obj(
+        &queue,
+        "createSecondaryLoop",
+        "()Ljava/awt/SecondaryLoop;",
+        &[],
+    )?;
+    let scope = Scope::default();
+    let completion = event_loop.clone();
+    let id = scope.register(move |j, _, _| {
+        let sent = sent.clone();
+        let completion = completion.clone();
+        later_non_modal(j, move |j| {
+            let result = (|| -> Result<()> {
+                let app = j.application()?;
+                anyhow::ensure!(
+                    j.bool(&app, "isWriteIntentLockAcquired")?,
+                    "Missing write intent"
+                );
+                let manager = j.static_obj(
+                    "com/intellij/openapi/fileEditor/FileDocumentManager",
+                    "getInstance",
+                    "()Lcom/intellij/openapi/fileEditor/FileDocumentManager;",
+                    &[],
+                )?;
+                j.void(&manager, "saveAllDocuments", "()V", &[])
+            })();
+            sent.send(result.map_err(|e| format!("{e:#}")))?;
+            j.bool(&completion, "exit")?;
+            Ok(())
+        })?;
+        j.null()
+    });
+    let runnable = callback(j, id)?;
+    // Match a native panel's ordinary Swing event, without acquiring the IDE
+    // lock before entry. The helper must establish the correct save context.
+    j.static_void(
+        "javax/swing/SwingUtilities",
+        "invokeLater",
+        "(Ljava/lang/Runnable;)V",
+        &[A::O(&runnable)],
+    )?;
+    // SelfTest runs on the EDT. Pump a bounded secondary loop instead of
+    // blocking that same thread waiting for its deferred callback.
+    let timeout_loop = event_loop.clone();
+    let timeout = scope.register(move |j, _, _| {
+        j.bool(&timeout_loop, "exit")?;
+        j.null()
+    });
+    let timeout_callback = callback(j, timeout)?;
+    let timer = j.new(
+        "javax/swing/Timer",
+        "(ILjava/awt/event/ActionListener;)V",
+        &[A::I(10000), A::O(&timeout_callback)],
+    )?;
+    j.void(&timer, "setRepeats", "(Z)V", &[A::Z(false)])?;
+    j.void(&timer, "start", "()V", &[])?;
+    let result = (|| -> Result<()> {
+        anyhow::ensure!(j.bool(&event_loop, "enter")?, "Event loop did not start");
+        received
+            .try_recv()
+            .context("Document save callback did not complete")?
+            .map_err(anyhow::Error::msg)
+    })();
+    j.void(&timer, "stop", "()V", &[])?;
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

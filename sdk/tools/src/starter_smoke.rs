@@ -19,8 +19,9 @@ pub fn run(options: Options) -> Result<()> {
     starter::generate(&options.output, cache.path(), || false)?;
     let elapsed = started.elapsed();
     let manifest = fs::read_to_string(options.output.join("Cargo.toml"))?;
+    let parsed = manifest.parse::<toml_edit::DocumentMut>()?;
     ensure!(
-        manifest.contains("cranpose = \"0.1.169\""),
+        parsed["dependencies"]["cranpose"].as_str() == Some(starter::SHOWCASE_FRAMEWORK_VERSION),
         "Pinned framework"
     );
     ensure!(
@@ -42,6 +43,7 @@ pub fn run(options: Options) -> Result<()> {
             "passed": true,
             "repository": starter::SHOWCASE_REPOSITORY,
             "revision": starter::SHOWCASE_REVISION,
+            "framework_version": starter::SHOWCASE_FRAMEWORK_VERSION,
             "output": options.output,
             "generation_ms": elapsed.as_secs_f64() * 1000.0,
             "manifest_sha256": format!("{:x}", Sha256::digest(manifest.as_bytes())),
