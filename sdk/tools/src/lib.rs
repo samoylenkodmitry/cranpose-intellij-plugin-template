@@ -1,5 +1,6 @@
 mod authoring_smoke;
 mod bridge;
+mod choice_smoke;
 mod control_smoke;
 mod hot_smoke;
 mod ide_test;
@@ -47,6 +48,8 @@ enum Task {
     AuthoringSmoke(authoring_smoke::Options),
     /// Create the bundled Showcase with no external tools or network access.
     StarterSmoke(starter_smoke::Options),
+    /// Verify compact choice search, identity, paging and native keyboard input.
+    ChoiceSmoke(choice_smoke::Options),
     BridgeTest {
         java: Option<PathBuf>,
         #[arg(long)]
@@ -76,6 +79,7 @@ pub fn run_cli(config: BuildConfig) -> Result<()> {
         Task::InspectionProfile(options) => inspection_profile::run(options),
         Task::AuthoringSmoke(options) => authoring_smoke::run(options),
         Task::StarterSmoke(options) => starter_smoke::run(options),
+        Task::ChoiceSmoke(options) => choice_smoke::run(options),
         Task::BridgeTest { java, ide } => bridge_test(java, ide),
         Task::Package {
             native_dir,
