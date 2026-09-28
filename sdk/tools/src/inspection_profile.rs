@@ -40,6 +40,9 @@ pub struct Options {
     /// Exercise end-of-list scrolling, collapse at the end and expansion.
     #[arg(long)]
     exercise_tree: bool,
+    /// Move the inspector between side and bottom layouts after the CPU samples.
+    #[arg(long, default_value_t=0, value_parser=clap::value_parser!(u32).range(0..=30))]
+    resize_rounds: u32,
     /// Structural budget for the composed UI, independent of machine speed.
     #[arg(long)]
     max_ui_nodes: Option<usize>,
@@ -97,6 +100,24 @@ pub fn run(options: Options) -> Result<()> {
         "studio.init",
         json!({"root":"/fixture","cache":"/cache","settings":{"inspect":true}}),
     )?;
+    let mut resize_checks = if options.resize_rounds > 0 {
+        verify_text(&host, "Filter · name, text, source or modifier")?;
+        resize_inspector(&host, options.resize_rounds, None)?
+    } else {
+        Vec::new()
+    };
+    // Restore the measurement viewport after testing the disconnected controller.
+    if options.resize_rounds > 0 {
+        host.send(
+            Packet::new(1)
+                .int(0)
+                .int(1000)
+                .int(800)
+                .float(1.0)
+                .float(60.0),
+        )?;
+        message(&host, "studio.viewport", json!({"width":1000,"height":800}))?;
+    }
     message(
         &host,
         "cranpose.project",
@@ -220,6 +241,40 @@ pub fn run(options: Options) -> Result<()> {
     } else {
         None
     };
+    let retained_rows = if options.resize_rounds > 0 {
+        ensure!(
+            options.nodes >= 100,
+            "Resize scrolling checks require at least 100 nodes"
+        );
+        let label = |index: usize| {
+            format!(
+                "Text · {}",
+                nodes[index]["text"].as_str().unwrap_or_default()
+            )
+        };
+        let first = label(0);
+        let anchor = label(12);
+        let view = verify_text(&host, &first)?;
+        let (x, y) = center(text_node(&view, &first).context("First row before resize")?);
+        host.send(
+            Packet::new(6)
+                .int(0)
+                .float(x)
+                .float(y)
+                .float(0.0)
+                .float(-280.0)
+                .byte(0),
+        )?;
+        verify_retained_rows(&host, &first, &anchor)?;
+        Some((first, anchor))
+    } else {
+        None
+    };
+    resize_checks.extend(resize_inspector(
+        &host,
+        options.resize_rounds,
+        retained_rows.as_ref(),
+    )?);
     child.terminate(Duration::from_secs(2))?;
     ensure!(
         child.wait_for_tree_exit(Duration::from_secs(2))?,
@@ -230,10 +285,71 @@ pub fn run(options: Options) -> Result<()> {
         "snapshotIntervalMs":500,"settleSeconds":options.settle_seconds,
         "initialLayout":{"latencyMs":initial_ms,"cpuSeconds":initial_cpu_seconds,
             "uiNodes":initial_view["nodes"].as_array().map(Vec::len),"uiSnapshotTruncated":initial_view["truncated"]},
-        "changedLayouts":changes,"changedWorkload":changed_workload,"treeChecks":tree_checks});
+        "changedLayouts":changes,"changedWorkload":changed_workload,"treeChecks":tree_checks,
+        "resizeChecks":resize_checks});
     fs::write(&options.report, serde_json::to_vec_pretty(&result)?)?;
     println!("{result}");
     Ok(())
+}
+
+fn verify_retained_rows(host: &crate::hot_smoke::Host, first: &str, anchor: &str) -> Result<()> {
+    verify_view(
+        host,
+        "scrolled rows retained across inspector placement",
+        |view| text_node(view, first).is_none() && text_node(view, anchor).is_some(),
+    )?;
+    Ok(())
+}
+
+fn resize_inspector(
+    host: &crate::hot_smoke::Host,
+    rounds: u32,
+    retained: Option<&(String, String)>,
+) -> Result<Vec<Value>> {
+    let mut checks = Vec::new();
+    for round in 0..rounds {
+        for (width, expected_width) in [(1024, 614.4), (480, 480.0)] {
+            drain(host)?;
+            host.send(
+                Packet::new(1)
+                    .int(0)
+                    .int(width)
+                    .int(800)
+                    .float(1.0)
+                    .float(60.0),
+            )?;
+            message(host, "studio.viewport", json!({"width":width,"height":800}))?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut placement = Value::Null;
+            loop {
+                for response in host.messages.try_iter() {
+                    let (channel, value, _) = response?;
+                    if channel == "studio.host" && value["action"] == "layout" {
+                        placement = value;
+                    }
+                }
+                let viewport = &placement["viewport"];
+                if (viewport["width"].as_f64().unwrap_or_default() - expected_width).abs() < 1.0
+                    && viewport["height"].as_f64().unwrap_or_default() > 0.0
+                {
+                    break;
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "Inspector did not reflow at {width}px: {placement}"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            // A layout side effect can precede modifier disposal. Request a fresh
+            // inspection too, proving the renderer survives the completed frame.
+            verify_text(host, "Filter · name, text, source or modifier")?;
+            if let Some((first, anchor)) = retained {
+                verify_retained_rows(host, first, anchor)?;
+            }
+            checks.push(json!({"round":round,"width":width,"layout":placement,"rendered":true,"scrollRetained":retained.is_some()}));
+        }
+    }
+    Ok(checks)
 }
 fn check_node_budget(view: &Value, maximum: Option<usize>) -> Result<()> {
     if let Some(maximum) = maximum {

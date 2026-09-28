@@ -74,3 +74,16 @@ and outbound messages. The actual IDE suite routes run/cancel messages from a
 Swing callback, saves documents in the queued context, and verifies worker
 cancellation. Existing tests also cover exclusive jobs and project disposal.
 Both the template demo and Studio compile this crate on all six native targets.
+
+For a Studio-compatible inspector, `inspection-profile --resize-rounds 3` checks
+the disconnected controller and a populated tree at 1024 px and 480 px. It waits
+for both the new viewport geometry and a fresh rendered inspection. After scrolling
+ten rows, it also verifies that switching between side and bottom placement retains
+the visible rows. Use at least 100 fixture nodes. These checks run outside the idle
+CPU observation intervals.
+
+Keep scroll and filter state above responsive branches that move or hide an
+inspector. The branch's modifier nodes need that state while detaching, and users
+should keep their place when changing the panel size. The resize check catches
+resetting the tree even when the renderer stays alive; the IDE suite additionally
+tests controller restart and real Swing component bounds.
