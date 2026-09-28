@@ -544,6 +544,7 @@ pub(crate) fn ColorControls(
     draft: cranpose_core::MutableState<super::color::ColorDraft>,
     colors: Colors,
     request: u64,
+    alpha: bool,
 ) {
     let mut next = draft.get();
     if next.sync_text(&field.text()) == Some(true) {
@@ -556,13 +557,18 @@ pub(crate) fn ColorControls(
         move || {
             ColorPreview(draft.get().rgba);
             Text(
-                "Drag to preview · one Undo per gesture",
+                if alpha {
+                    "Drag to preview · one Undo per gesture"
+                } else {
+                    "RGB · opaque · one Undo per gesture"
+                },
                 Modifier::empty().padding(4.0),
                 style(colors.muted, 10.0),
             );
             for (index, label) in ["Hue", "Saturation", "Brightness", "Opacity"]
                 .into_iter()
                 .enumerate()
+                .take(if alpha { 4 } else { 3 })
             {
                 cranpose::key(index, move || {
                     Row(

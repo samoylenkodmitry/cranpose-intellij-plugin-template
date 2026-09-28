@@ -350,6 +350,7 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
             ("getComponent", "()Ljavax/swing/JComponent;"),
             ("getPreferredFocusedComponent", "()Ljavax/swing/JComponent;"),
             ("getName", "()Ljava/lang/String;"),
+            ("selectNotify", "()V"),
             ("getFile", "()Lcom/intellij/openapi/vfs/VirtualFile;"),
             (
                 "setState",

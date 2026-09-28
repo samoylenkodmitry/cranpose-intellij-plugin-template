@@ -97,7 +97,7 @@ pub fn install(project: &Arc<Project>, j: &mut J<'_>, multicaster: &O) -> Result
     let id = project.scope.register(move |j, op, args| {
         if let Some(project) = weak.upgrade() {
             match op {
-                "Callback.mouseClicked" => pointer(&project, j, &args[0], true)?,
+                "Callback.mousePressed" => pointer(&project, j, &args[0], true)?,
                 "Callback.mouseMoved" => pointer(&project, j, &args[0], false)?,
                 "Callback.mouseExited" => {
                     project.authoring.lock().expect("authoring").hovered = None
@@ -1226,6 +1226,15 @@ fn open_control(
         "(Z)Lcom/intellij/openapi/ui/popup/ComponentPopupBuilder;",
         &[A::Z(focus)],
     )?;
+    // IntelliJ's default outside-click cancellation consumes the first source
+    // click. Let the editor receive it; our mousePressed listener dismisses the
+    // control while IntelliJ places the caret with that same event.
+    j.obj(
+        &builder,
+        "setCancelOnClickOutside",
+        "(Z)Lcom/intellij/openapi/ui/popup/ComponentPopupBuilder;",
+        &[A::Z(false)],
+    )?;
     let popup = j.obj(
         &builder,
         "createPopup",
@@ -1239,7 +1248,21 @@ fn open_control(
         &[],
     )?;
     let x = j.field_int(point, "x")?;
-    let y = j.field_int(point, "y")? + j.int(editor, "getLineHeight")? / 2 + 4;
+    let visual = j.obj(
+        editor,
+        "xyToVisualPosition",
+        "(Ljava/awt/Point;)Lcom/intellij/openapi/editor/VisualPosition;",
+        &[A::O(point)],
+    )?;
+    let line_point = j.obj(
+        editor,
+        "visualPositionToXY",
+        "(Lcom/intellij/openapi/editor/VisualPosition;)Ljava/awt/Point;",
+        &[A::O(&visual)],
+    )?;
+    let line_top = j.field_int(&line_point, "y")?;
+    let line_height = j.int(editor, "getLineHeight")?;
+    let y = line_top + line_height + 6;
     let below = j.new("java/awt/Point", "(II)V", &[A::I(x), A::I(y)])?;
     let relative = j.new(
         "com/intellij/ui/awt/RelativePoint",
@@ -1259,6 +1282,44 @@ fn open_control(
             "(Lcom/intellij/ui/awt/RelativePoint;)V",
             &[A::O(&relative)],
         )?;
+        let origin = j.obj(&component, "getLocationOnScreen", "()Ljava/awt/Point;", &[])?;
+        let source_left = j.field_int(&origin, "x")?;
+        let source_top = j.field_int(&origin, "y")? + line_top;
+        let anchor = j.new(
+            "java/awt/Point",
+            "(II)V",
+            &[A::I(source_left + x), A::I(source_top)],
+        )?;
+        let screen = j.static_obj(
+            "com/intellij/ui/ScreenUtil",
+            "getScreenRectangle",
+            "(Ljava/awt/Point;)Ljava/awt/Rectangle;",
+            &[A::O(&anchor)],
+        )?;
+        let size = j.obj(&popup, "getSize", "()Ljava/awt/Dimension;", &[])?;
+        let screen = [
+            j.field_int(&screen, "x")?,
+            j.field_int(&screen, "y")?,
+            j.field_int(&screen, "width")?,
+            j.field_int(&screen, "height")?,
+        ];
+        let size = [j.field_int(&size, "width")?, j.field_int(&size, "height")?];
+        if let Some([x, y]) =
+            crate::popup::position(screen, size, [source_left, source_top, x + 16, line_height])
+        {
+            let location = j.new("java/awt/Point", "(II)V", &[A::I(x), A::I(y)])?;
+            j.void(
+                &popup,
+                "setLocation",
+                "(Ljava/awt/Point;)V",
+                &[A::O(&location)],
+            )?;
+        } else {
+            j.void(&popup, "cancel", "()V", &[])?;
+            *panel.on_message.lock().expect("message") = None;
+            panel.send(crate::protocol::Packet::new(13).int(0).byte(0));
+            return Ok(());
+        }
     }
     panel.send(crate::protocol::Packet::new(13).int(0).byte(1));
     project.authoring.lock().expect("authoring").popup = Some((popup, panel));
@@ -1553,6 +1614,10 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             .popup
             .clone()
             .context("Hover did not open a control")?;
+        ensure!(
+            !j.bool(&popup, "isCancelOnClickOutside")?,
+            "Popup consumes the first source click"
+        );
         pointer(project, j, &event, false)?;
         let again = project
             .authoring
@@ -1606,7 +1671,7 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             "(Ljava/awt/Component;IJIIIIZI)V",
             &[
                 A::O(&component),
-                A::I(500),
+                A::I(501),
                 A::J(0),
                 A::I(0),
                 A::I(x),
@@ -1618,6 +1683,10 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         )?;
         let clicked=j.new("com/intellij/openapi/editor/event/EditorMouseEvent","(Lcom/intellij/openapi/editor/Editor;Ljava/awt/event/MouseEvent;Lcom/intellij/openapi/editor/event/EditorMouseEventArea;)V",&[A::O(&editor),A::O(&click),A::O(&area)])?;
         pointer(project, j, &clicked, true)?;
+        ensure!(
+            !j.bool(&clicked, "isConsumed")?,
+            "Source press was consumed"
+        );
         ensure!(
             project.authoring.lock().expect("authoring").popup.is_none(),
             "Clicking source must dismiss the control without stealing focus"

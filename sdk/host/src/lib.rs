@@ -8,6 +8,7 @@ pub mod inlays;
 pub mod jobs;
 pub mod jvm;
 mod model;
+mod popup;
 pub mod process;
 mod project;
 pub mod protocol;

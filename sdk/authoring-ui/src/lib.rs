@@ -321,7 +321,13 @@ fn ControlForm(init: Value) {
                     );
                     let current_kind = kind.get();
                     if current_kind == "color" {
-                        design::ColorControls(field, color, colors, request);
+                        design::ColorControls(
+                            field,
+                            color,
+                            colors,
+                            request,
+                            suffix.get().split(',').count() != 3,
+                        );
                     } else if matches!(current_kind.as_str(), "int" | "float") {
                         cranpose::key(current_kind.clone(), move || {
                             design::NumberControls(
