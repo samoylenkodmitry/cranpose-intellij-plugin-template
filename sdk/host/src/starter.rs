@@ -7,9 +7,9 @@ use std::{
     path::{Component, Path},
 };
 pub const SHOWCASE_REPOSITORY: &str = "https://github.com/samoylenkodmitry/cranpose-showcase";
-pub const SHOWCASE_REVISION: &str = "287ceafe513523b0fdc9bd8998aa724cfe738596";
+pub const SHOWCASE_REVISION: &str = "8b251cc0d668e078ebcee49fa01710e2fe35547e";
 const SHOWCASE_ARCHIVE: &[u8] = include_bytes!("../assets/showcase.zip");
-const SHOWCASE_SHA256: &str = "19b69244adcaa0b5c4e18506cda48b695e574d01d94ffc03ea9550121459c230";
+const SHOWCASE_SHA256: &str = "2d0d8970585650bb292623259f121361e9b7edeb4746cf898f9c5a5fa4e59e86";
 
 /// The bundled starter's desktop entry is known before Cargo (or even Rust) is
 /// installed. Keep this contract tied to the pinned archive in the tests below.
@@ -253,6 +253,18 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(features, target.features);
         assert!(manifest["dependencies"].get("cranpose").is_some());
+        let build = fs::read_to_string(root.join("CranposeBuild.toml"))
+            .expect("local platform configuration")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("build TOML");
+        assert_eq!(
+            build["targets"]["ios"]["bin"].as_str(),
+            Some("cranpose-showcase-ios")
+        );
+        assert_eq!(
+            build["android"]["properties"]["showcaseAbi"].as_str(),
+            Some("arm64-v8a")
+        );
         let mut archive = zip::ZipArchive::new(Cursor::new(SHOWCASE_ARCHIVE)).expect("bundle");
         let prefix = format!("cranpose-showcase-{SHOWCASE_REVISION}/");
         let mut files = 0;
@@ -280,7 +292,7 @@ mod tests {
             }
             files += 1;
         }
-        assert_eq!(files, 66);
+        assert_eq!(files, 67);
         assert_eq!(
             fs::read_to_string(root.join(".idea/keep.xml")).expect("metadata"),
             "existing"
