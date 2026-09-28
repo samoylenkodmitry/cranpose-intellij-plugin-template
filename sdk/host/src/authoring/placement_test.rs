@@ -310,6 +310,44 @@ fn lifecycle(project: &Arc<Project>, j: &mut J<'_>, factory: &O) -> Result<()> {
             "Retained alias positions disagree"
         );
         remember(project, j, &document, &source, &catalog)?;
+        // Glyphs paint natively from the current catalog: the edited color's
+        // swatch is red, and every other value shows its knob.
+        let color_id = catalog
+            .literals
+            .iter()
+            .find(|l| l.kind == "color")
+            .map(|l| l.id);
+        let glyphs = project
+            .authoring
+            .lock()
+            .expect("authoring")
+            .placed
+            .iter()
+            .filter_map(|p| p.literal.map(|l| (l, p.object.clone())))
+            .collect::<Vec<_>>();
+        for (literal, inlay) in glyphs {
+            let pixels = crate::glyphs::rendered(j, &inlay)?;
+            ensure!(pixels.len() > 10, "Value glyph {literal} did not paint");
+            if Some(literal) == color_id {
+                ensure!(
+                    pixels
+                        .iter()
+                        .any(|p| p[0] > 150 && p[1] < 110 && p[2] < 120),
+                    "Color swatch does not show the edited color"
+                );
+            }
+        }
+        let calls = project.authoring.lock().expect("authoring").calls.len();
+        ensure!(
+            calls
+                == catalog
+                    .calls
+                    .iter()
+                    .filter(|c| c.range.end_utf16 > c.range.start_utf16)
+                    .count()
+                    .min(1024),
+            "Composable calls lack native underlines: {calls}"
+        );
 
         // Even with identical schema and offsets, an invalid native anchor must
         // force replacement. Retired callbacks must no longer return metadata.

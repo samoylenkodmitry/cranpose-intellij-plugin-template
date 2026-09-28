@@ -42,6 +42,7 @@ pub struct State {
     pub overlay_ready: bool,
     watched: Option<(O, O, i64)>,
     arrival: Option<Arrival>,
+    calls: Vec<(O, usize, usize)>,
 }
 struct Arrival {
     path: String,
@@ -105,9 +106,7 @@ fn mouse_listener(project: &Arc<Project>, j: &mut J<'_>) -> Result<O> {
             match op {
                 "Callback.mousePressed" => pointer(&project, j, &args[0], true)?,
                 "Callback.mouseMoved" => pointer(&project, j, &args[0], false)?,
-                "Callback.mouseExited" => {
-                    project.authoring.lock().expect("authoring").hovered = None
-                }
+                "Callback.mouseExited" => hover(&project, j, None)?,
                 _ => {}
             }
         }
@@ -242,9 +241,12 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             } else {
                 clear_placed(project, j)?;
             }
-            let mut state = project.authoring.lock().expect("authoring");
-            state.current = Some(result);
-            state.geometry.clear();
+            {
+                let mut state = project.authoring.lock().expect("authoring");
+                state.current = Some(result);
+                state.geometry.clear();
+            }
+            repaint_colors(project, j)?;
         } else {
             project.authoring.lock().expect("authoring").key = None;
         }
@@ -290,6 +292,7 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
 }
 
 fn clear_placed(project: &Project, j: &mut J<'_>) -> Result<()> {
+    clear_calls(project, j)?;
     let placed = std::mem::take(&mut project.authoring.lock().expect("authoring").placed);
     for item in placed {
         if j.bool(&item.object, "isValid")? {
@@ -441,6 +444,7 @@ fn refresh_placed(
     path: &str,
     catalog: &Catalog,
 ) -> Result<()> {
+    refresh_calls(project, j, editor, catalog)?;
     if reusable_placed(project, j, path, catalog)? {
         return Ok(());
     }
@@ -630,12 +634,16 @@ fn place_with_batch(
     let batch_model = model.clone();
     crate::inlays::execute(j, &batch_model, batch, move |j| {
         for (literal, end) in targets {
-            let id = jvm::register(|j, op, _| {
-                if op == "ValueGlyph.calcWidthInPixels" {
-                    j.boxed_int(14)
-                } else {
+            let weak = Arc::downgrade(&project);
+            let id = jvm::register(move |j, op, args| match op {
+                "ValueGlyph.calcWidthInPixels" => j.boxed_int(crate::glyphs::VALUE_WIDTH),
+                "ValueGlyph.paint" => {
+                    if let Some(look) = weak.upgrade().and_then(|p| value_look(&p, literal)) {
+                        crate::glyphs::value(j, &args[1], &args[2], &look)?;
+                    }
                     j.null()
                 }
+                _ => j.null(),
             });
             let renderer = j.new("dev/cranpose/rust/ValueGlyph", "(J)V", &[A::J(id)])?;
             let inlay=j.obj(&model,"addInlineElement","(IZLcom/intellij/openapi/editor/EditorCustomElementRenderer;)Lcom/intellij/openapi/editor/Inlay;",&[A::I(end as i32),A::Z(true),A::O(&renderer)])?;
@@ -656,6 +664,129 @@ fn place_with_batch(
         }
         Ok(())
     })
+}
+
+/// The current look of a glyph. Paint never waits: a busy state keeps the
+/// previous frame's pixels until the next repaint.
+fn value_look(project: &Project, literal: usize) -> Option<crate::glyphs::ValueLook> {
+    let state = project.authoring.try_lock().ok()?;
+    let hovered = state.hovered == Some(literal);
+    let value = state
+        .current
+        .as_ref()?
+        .catalog
+        .as_ref()?
+        .literals
+        .get(literal)?;
+    Some(if value.kind == "color" {
+        crate::glyphs::ValueLook::Swatch {
+            rgba: cranpose_plugin_authoring::runtime::color_channels(&value.value)?,
+            hovered,
+        }
+    } else {
+        crate::glyphs::ValueLook::Knob { hovered }
+    })
+}
+
+/// Move hover emphasis between glyphs, repainting only the two affected inlays.
+fn hover(project: &Project, j: &mut J<'_>, literal: Option<usize>) -> Result<()> {
+    let changed = {
+        let mut state = project.authoring.lock().expect("authoring");
+        let previous = std::mem::replace(&mut state.hovered, literal);
+        if previous == literal {
+            return Ok(());
+        }
+        state
+            .placed
+            .iter()
+            .filter(|p| p.literal.is_some() && (p.literal == previous || p.literal == literal))
+            .map(|p| p.object.clone())
+            .collect::<Vec<_>>()
+    };
+    for inlay in changed {
+        if j.bool(&inlay, "isValid")? {
+            j.void(&inlay, "repaint", "()V", &[])?;
+        }
+    }
+    Ok(())
+}
+
+/// The editor repaints edited lines before the new catalog exists. Repaint
+/// color glyphs once it does, so a swatch shows the value just written.
+fn repaint_colors(project: &Project, j: &mut J<'_>) -> Result<()> {
+    let inlays = {
+        let state = project.authoring.lock().expect("authoring");
+        let Some(catalog) = state.current.as_ref().and_then(|p| p.catalog.as_ref()) else {
+            return Ok(());
+        };
+        state
+            .placed
+            .iter()
+            .filter(|p| {
+                p.literal
+                    .and_then(|id| catalog.literals.get(id))
+                    .is_some_and(|l| l.kind == "color")
+            })
+            .map(|p| p.object.clone())
+            .collect::<Vec<_>>()
+    };
+    for inlay in inlays {
+        if j.bool(&inlay, "isValid")? {
+            j.void(&inlay, "repaint", "()V", &[])?;
+        }
+    }
+    Ok(())
+}
+
+/// Composable calls carry a native underline. Range highlighters follow edits
+/// themselves; rebuild only when the parsed call ranges disagree with them.
+fn refresh_calls(project: &Project, j: &mut J<'_>, editor: &O, catalog: &Catalog) -> Result<()> {
+    let wanted = catalog
+        .calls
+        .iter()
+        .map(|c| (c.range.start_utf16, c.range.end_utf16))
+        .filter(|(start, end)| end > start)
+        .take(1024)
+        .collect::<Vec<_>>();
+    let current = project.authoring.lock().expect("authoring").calls.clone();
+    if current.len() == wanted.len() {
+        let mut same = true;
+        for ((highlighter, _, _), (start, end)) in current.iter().zip(&wanted) {
+            if !j.bool(highlighter, "isValid")?
+                || j.int(highlighter, "getStartOffset")? as usize != *start
+                || j.int(highlighter, "getEndOffset")? as usize != *end
+            {
+                same = false;
+                break;
+            }
+        }
+        if same {
+            return Ok(());
+        }
+    }
+    clear_calls(project, j)?;
+    let markup = j.obj(
+        editor,
+        "getMarkupModel",
+        "()Lcom/intellij/openapi/editor/markup/MarkupModel;",
+        &[],
+    )?;
+    let mut placed = Vec::with_capacity(wanted.len());
+    for (start, end) in wanted {
+        let highlighter = crate::glyphs::call_underline(j, &markup, start as i32, end as i32)?;
+        placed.push((highlighter, start, end));
+    }
+    project.authoring.lock().expect("authoring").calls = placed;
+    Ok(())
+}
+fn clear_calls(project: &Project, j: &mut J<'_>) -> Result<()> {
+    let calls = std::mem::take(&mut project.authoring.lock().expect("authoring").calls);
+    for (highlighter, _, _) in calls {
+        if j.bool(&highlighter, "isValid")? {
+            j.void(&highlighter, "dispose", "()V", &[])?;
+        }
+    }
+    Ok(())
 }
 
 fn ensure_panel(project: &Arc<Project>, j: &mut J<'_>) -> Result<Arc<Panel>> {
@@ -780,67 +911,6 @@ fn geometry(project: &Arc<Project>, j: &mut J<'_>, editor: &O, stamp: i64) -> Re
     {
         return Ok(());
     }
-    let mut items = vec![];
-    for (anchor, placed) in state.placed.iter().enumerate() {
-        if let Some(id) = placed.literal
-            && j.bool(&placed.object, "isValid")?
-        {
-            let rect = j.obj(&placed.object, "getBounds", "()Ljava/awt/Rectangle;", &[])?;
-            if rect.is_null() {
-                continue;
-            }
-            let top = j.field_int(&rect, "y")? - y;
-            if top + height < 0 || top > h {
-                continue;
-            }
-            let literal = parsed.catalog.as_ref().and_then(|c| c.literals.get(id));
-            let color = literal.filter(|v| v.kind == "color");
-            items.push(json!({"kind":if color.is_some(){"color"}else{"value"},"value":color.map(|v|&v.value),"x":j.field_int(&rect,"x")?-x,"y":top,"width":14,"height":height,"label":"◆","id":id,"anchor":anchor}));
-        }
-    }
-    let folding = j.obj(
-        editor,
-        "getFoldingModel",
-        "()Lcom/intellij/openapi/editor/FoldingModel;",
-        &[],
-    )?;
-    for call in parsed
-        .catalog
-        .iter()
-        .flat_map(|c| c.calls.iter())
-        .take(1024)
-    {
-        if j.call(
-            &folding,
-            "isOffsetCollapsed",
-            "(I)Z",
-            &[A::I(call.range.start_utf16 as i32)],
-        )?
-        .z()?
-        {
-            continue;
-        }
-        let point = j.obj(
-            editor,
-            "offsetToXY",
-            "(I)Ljava/awt/Point;",
-            &[A::I(call.range.start_utf16 as i32)],
-        )?;
-        let top = j.field_int(&point, "y")? - y;
-        if top + height < 0 || top > h {
-            continue;
-        }
-        let end = j.obj(
-            editor,
-            "offsetToXY",
-            "(I)Ljava/awt/Point;",
-            &[A::I(call.range.end_utf16 as i32)],
-        )?;
-        items.push(json!({"kind":"call","x":j.field_int(&point,"x")?-x,"y":top+height-2,"width":(j.field_int(&end,"x")?-j.field_int(&point,"x")?).max(1),"height":2}));
-        if items.len() >= 256 {
-            break;
-        }
-    }
     let mut arrival = None;
     if state.overlay_ready
         && let Some(Arrival {
@@ -878,12 +948,9 @@ fn geometry(project: &Arc<Project>, j: &mut J<'_>, editor: &O, stamp: i64) -> Re
     }
     state.geometry = key;
     drop(state);
-    let mut badges = crate::stability::decorations(project, j, editor, x, y, h)?;
-    if let Some(arrival) = arrival {
-        badges.insert(0, arrival);
-    }
-    badges.extend(items);
-    let items = badges.into_iter().take(256).collect::<Vec<_>>();
+    // Glyphs, badges and call underlines are painted by the editor itself.
+    // The overlay carries only transient effects that may cross text lines.
+    let items = arrival.into_iter().collect::<Vec<_>>();
     let panel = ensure_panel(project, j)?;
     if let Some(id) = project.authoring.lock().expect("authoring").overlay_id
         && let Some(surface) = panel.overlay_surface(id)
@@ -950,7 +1017,7 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
         "(Ljava/awt/Point;Ljava/lang/Class;)Lcom/intellij/openapi/editor/Inlay;",
         &[A::O(&point), A::O(&class)],
     )?;
-    let mut state = project.authoring.lock().expect("authoring");
+    let state = project.authoring.lock().expect("authoring");
     let literal = if inlay.is_null() {
         None
     } else {
@@ -962,8 +1029,8 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
     // The glyph is the control's explicit hit target. Source text belongs to
     // caret placement and selection, including a click while a popup is open.
     if literal.is_none() && focus {
-        state.hovered = None;
         drop(state);
+        hover(project, j, None)?;
         return dismiss_control(project, j);
     }
     if !focus && state.hovered == literal {
@@ -983,10 +1050,12 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
         j.void(event, "consume", "()V", &[])?;
         return Ok(());
     }
-    state.hovered = literal;
+    drop(state);
+    hover(project, j, literal)?;
     let Some(id) = literal else {
         return Ok(());
     };
+    let state = project.authoring.lock().expect("authoring");
     let Some(parsed) = &state.current else {
         return Ok(());
     };
@@ -1003,8 +1072,7 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
     )?;
     // A parse can be in flight while the pointer moves. Wait for a fresh catalog.
     if j.text(&document, "getText")? != source {
-        project.authoring.lock().expect("authoring").hovered = None;
-        return Ok(());
+        return hover(project, j, None);
     }
     open_control(project, j, &editor, &point, (id, catalog, source), focus)
 }

@@ -86,7 +86,8 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
                 "ide.authoring.control",
                 &json!({"literal":{"kind":kind,"value":initial}}).to_string(),
             ))?;
-            verify_text(&host, "Number")?;
+            // Both numeric kinds share a title; wait for this control's value.
+            verify_text(&host, initial)?;
             replace_text(&host, 100.0, FIELD_Y, incomplete, select_all_modifier)?;
             verify_text(&host, hint)?;
             expect_silence(&host)?;

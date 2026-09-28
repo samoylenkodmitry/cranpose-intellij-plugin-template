@@ -100,78 +100,36 @@ pub fn run(options: Options) -> Result<()> {
     let lightning_surface = window_surface.context("Window anchor")?;
     send(size(surface, 640, 400))?;
     send(Packet::new(13).int(surface).byte(1))?;
+    // Persistent glyphs, badges and call underlines are painted by the IDE
+    // editor. The overlay draws only the transient source-arrival sweep.
     let geometry = json!({"items":[
-        {"kind":"value","x":24,"y":24,"width":14,"height":22,"label":"◆"},
-        {"kind":"call","x":48,"y":46,"width":120,"height":3},
-        {"kind":"badge","x":200,"y":24,"width":100,"height":22,"label":"stable","tone":"stable"},
-        {"kind":"color","anchor":1,"value":"0.1,0.8,0.2,1","x":340,"y":24,"width":14,"height":22},
-        {"kind":"color","anchor":2,"value":"0.1,0.8,0.2,0","x":368,"y":24,"width":14,"height":22}
+        {"kind":"arrival","request":1,"x":8,"y":72,"width":580,"height":24}
     ]});
     send(Packet::message(
         "ide.authoring.geometry",
         &geometry.to_string(),
     ))?;
-    let mut painted = 0;
-    let mut capture = crate::ui_probe::FrameCapture::default();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if let Ok(event) = receive.recv_timeout(Duration::from_millis(100))
-            && let Event::Frame(frame) = event?
-            && frame.surface == surface
-        {
-            let mut sample = frame.clone();
-            sample.surface = 0;
-            capture.update(&sample);
-            painted = frame
-                .pixels
-                .iter()
-                .filter(|p| (**p as u32 >> 24) != 0)
-                .count();
-            if painted > 100 {
-                break;
-            }
-        }
-    }
-    ensure!(
-        painted > 100 && painted < 10_000,
-        "Editor decorations must paint small accents on a transparent surface: {painted} pixels"
-    );
-    let opaque = capture.pixel(345, 34).context("opaque inline color")?.0;
-    let transparent = capture
-        .pixel(373, 34)
-        .context("transparent inline color")?
-        .0;
-    ensure!(
-        opaque[1] > opaque[0].saturating_add(70),
-        "Inline swatch lost its source color: {opaque:?}"
-    );
-    ensure!(
-        transparent[0].abs_diff(transparent[1]) <= 2
-            && transparent[1].abs_diff(transparent[2]) <= 2,
-        "Transparent swatch ignored alpha: {transparent:?}"
-    );
-    let mut animated_geometry = geometry.clone();
-    animated_geometry["items"]
-        .as_array_mut()
-        .context("items")?
-        .insert(
-            0,
-            json!({"kind":"arrival","request":1,"x":8,"y":72,"width":580,"height":24}),
-        );
-    send(Packet::message(
-        "ide.authoring.geometry",
-        &animated_geometry.to_string(),
-    ))?;
     let transition = Instant::now();
-    let mut arrival_frames = 0;
+    let (mut painted, mut arrival_frames) = (0, 0);
     while transition.elapsed() < Duration::from_secs(1) {
         if let Ok(event) = receive.recv_timeout(Duration::from_millis(50))
             && let Event::Frame(frame) = event?
             && frame.surface == surface
         {
             arrival_frames += 1;
+            painted = painted.max(
+                frame
+                    .pixels
+                    .iter()
+                    .filter(|p| (**p as u32 >> 24) != 0)
+                    .count(),
+            );
         }
     }
+    ensure!(
+        painted > 100 && painted <= 580 * 24,
+        "Arrival must paint only its source row on a transparent surface: {painted} pixels"
+    );
     ensure!(
         arrival_frames >= 3,
         "Source arrival shader did not animate: {arrival_frames} frames"
@@ -317,7 +275,7 @@ pub fn run(options: Options) -> Result<()> {
         idle_frames == 0,
         "Settled decorations emitted {idle_frames} frames"
     );
-    let mut report = json!({"result":"passed","paintedPixels":painted,"inlineColorAlpha":true,"arrivalFrames":arrival_frames,"lightning":lightning,"idleFrames":idle_frames,
+    let mut report = json!({"result":"passed","paintedPixels":painted,"arrivalFrames":arrival_frames,"lightning":lightning,"idleFrames":idle_frames,
         "idleSeconds":start.elapsed().as_secs_f64(),"idleCpuSeconds":cpu});
     let _ = writer
         .lock()

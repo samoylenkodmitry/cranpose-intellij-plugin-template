@@ -2,6 +2,7 @@
 mod authoring;
 mod editor;
 mod feedback;
+pub mod glyphs;
 #[cfg(feature = "ide-tests")]
 mod ide_tests;
 pub mod inlays;

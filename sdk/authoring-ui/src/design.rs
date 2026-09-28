@@ -298,28 +298,6 @@ pub(crate) fn ControlGlass(color: Color) {
     );
 }
 
-#[composable]
-pub(crate) fn InlineColor(modifier: Modifier, color: [f64; 4]) {
-    let channel = |value: f64| {
-        animateFloatAsState(
-            value as f32,
-            tween(160, Easing::FastOutSlowInEasing),
-            "inline color",
-        )
-        .value()
-    };
-    let c = Color(
-        channel(color[0]),
-        channel(color[1]),
-        channel(color[2]),
-        channel(color[3]),
-    );
-    UiBox(
-        modifier.graphics_layer_value(layer(effect(c, 0.0, 0.0, [0.0; 4]))),
-        BoxSpec::default(),
-        || {},
-    );
-}
 /// Title row: what is being tuned, where it lives, and whether source has it.
 #[composable]
 pub(crate) fn ControlHeader(

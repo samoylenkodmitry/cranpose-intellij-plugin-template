@@ -70,6 +70,8 @@ pub fn accent_effect(color: Color) -> RenderEffect {
     RenderEffect::runtime_shader(shader)
 }
 
+/// Transient editor effects that may cross text lines. Persistent glyphs,
+/// badges and underlines are painted by the IDE editor itself.
 #[composable]
 pub fn EditorDecorations() {
     lightning::LiveEditLightning();
@@ -89,100 +91,18 @@ pub fn EditorDecorations() {
             Modifier::empty().fill_max_size(),
             BoxSpec::default(),
             move || {
-                for (index, item) in items.get().into_iter().take(256).enumerate() {
-                    let identity = format!(
-                        "{}:{}",
-                        item["kind"],
-                        item["anchor"].as_u64().unwrap_or(index as u64)
-                    );
-                    cranpose::key(identity, move || {
-                        let n = |key: &str| item[key].as_f64().unwrap_or_default() as f32;
-                        let (x, y, w, h) = (n("x"), n("y"), n("width"), n("height"));
-                        if item["kind"] == "arrival" {
-                            cranpose::key(
-                                item["request"].as_u64().unwrap_or_default(),
-                                move || {
-                                    ArrivalAccent(
-                                        Modifier::empty()
-                                            .offset(x, y)
-                                            .width(w)
-                                            .height(h)
-                                            .rounded_corners(4.0),
-                                        Color(
-                                            colors.accent.0,
-                                            colors.accent.1,
-                                            colors.accent.2,
-                                            0.60,
-                                        ),
-                                    );
-                                },
-                            );
-                        } else if item["kind"] == "color" {
-                            if let Some(c) = item["value"].as_str().and_then(design::parse_color) {
-                                design::InlineColor(
-                                    Modifier::empty()
-                                        .offset(x + 1.0, y + (h - 12.0) * 0.5)
-                                        .width(12.0)
-                                        .height(12.0),
-                                    c,
-                                );
-                            }
-                        } else if item["kind"] == "call" {
-                            let color =
-                                Color(colors.accent.0, colors.accent.1, colors.accent.2, 0.55);
-                            UiBox(
-                                Modifier::empty()
-                                    .offset(x, y)
-                                    .width(w)
-                                    .height(h)
-                                    .graphics_layer(move || GraphicsLayer {
-                                        render_effect: Some(accent_effect(color)),
-                                        compositing_strategy: CompositingStrategy::Offscreen,
-                                        ..Default::default()
-                                    }),
-                                BoxSpec::default(),
-                                || {},
-                            );
-                        } else {
-                            let label = item["label"].as_str().unwrap_or("◆").to_owned();
-                            let tone = match item["tone"].as_str() {
-                                Some("warning") => Color(0.85, 0.64, 0.28, 1.0),
-                                Some("danger") => Color(0.87, 0.40, 0.40, 1.0),
-                                Some("stable") => Color(0.33, 0.72, 0.56, 1.0),
-                                _ => colors.accent,
-                            };
-                            UiBox(
-                                Modifier::empty().offset(x, y).width(w).height(h),
-                                BoxSpec::default().content_alignment(cranpose::Alignment::CENTER),
-                                move || {
-                                    if item["kind"] == "badge" {
-                                        UiBox(
-                                            Modifier::empty()
-                                                .fill_max_size()
-                                                .rounded_corners(5.0)
-                                                .graphics_layer(move || GraphicsLayer {
-                                                    render_effect: Some(accent_effect(Color(
-                                                        tone.0, tone.1, tone.2, 0.14,
-                                                    ))),
-                                                    compositing_strategy:
-                                                        CompositingStrategy::Offscreen,
-                                                    ..Default::default()
-                                                }),
-                                            BoxSpec::default(),
-                                            || {},
-                                        );
-                                    }
-                                    Text(
-                                        label.clone(),
-                                        Modifier::empty(),
-                                        style(
-                                            tone,
-                                            if item["kind"] == "badge" { 11.0 } else { 9.0 },
-                                        ),
-                                    );
-                                },
-                            );
-                        }
+                for item in items.get().into_iter().filter(|i| i["kind"] == "arrival") {
+                    let n = |key: &str| item[key].as_f64().unwrap_or_default() as f32;
+                    let (x, y, w, h) = (n("x"), n("y"), n("width"), n("height"));
+                    cranpose::key(item["request"].as_u64().unwrap_or_default(), move || {
+                        ArrivalAccent(
+                            Modifier::empty()
+                                .offset(x, y)
+                                .width(w)
+                                .height(h)
+                                .rounded_corners(4.0),
+                            Color(colors.accent.0, colors.accent.1, colors.accent.2, 0.60),
+                        );
                     });
                 }
             },
