@@ -74,6 +74,7 @@ jobs:
       - run: cargo run --locked -p cranpose-template-tools -- ide-test --ide "$CRANPOSE_TEST_IDE"
       - run: cargo build --locked --no-default-features -p cranpose-intellij-ui
       - run: cargo run --locked -p cranpose-template-tools -- authoring-smoke --binary target/debug/cranpose-intellij-ui --log authoring.log --report authoring.json
+      - run: cargo run --locked -p cranpose-template-tools -- choice-smoke --binary target/debug/cranpose-intellij-ui --log choices.log --report choices.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -84,6 +85,8 @@ jobs:
             target/ide-tests/**/log
             authoring.log
             authoring.json
+            choices.log
+            choices.json
             authoring-controls-*.png
             lightning-*.png
           if-no-files-found: ignore

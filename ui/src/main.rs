@@ -8,6 +8,7 @@ fn main() {
         Ok("overlay") => cranpose_plugin_authoring_ui::EditorDecorations,
         Ok("value") => cranpose_plugin_authoring_ui::ValueControl,
         Ok("wizard") => cranpose_plugin_authoring_ui::ShowcaseCard,
+        Ok("choices") => cranpose_plugin_ui::choice_demo::ChoiceDemo,
         _ => ToolWindow,
     };
     let launcher = AppLauncher::new()
