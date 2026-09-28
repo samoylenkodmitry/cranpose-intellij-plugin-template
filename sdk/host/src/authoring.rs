@@ -1089,10 +1089,12 @@ fn open_control(
         .get(id)
         .ok_or_else(|| anyhow::anyhow!("Live value disappeared"))?
         .clone();
+    // Sized to the live controls: header, field, kind controls and one hint line.
     let (width, height) = match literal.kind.as_str() {
-        "color" => (400, 490),
-        "int" | "float" => (400, 380),
-        _ => (340, 240),
+        "color" => (380, 330),
+        "int" | "float" => (380, 196),
+        "bool" => (300, 124),
+        _ => (340, 124),
     };
     let control_group = format!(
         "cranpose-control-{}",
