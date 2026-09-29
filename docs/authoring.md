@@ -104,7 +104,11 @@ compilation. The runner can use `transport::Bridge` for saved edits; the preview
 can also receive the same update over its existing host connection.
 
 The store rejects older revisions, incompatible schemas and invalid typed values
-atomically. Bounded file, slot, value and interned-string budgets stop indefinite
+atomically. A literal learns its compiled type when it first runs; until then,
+for example in a click handler after a patch, the store accepts only values that
+every type of its kind can hold (integers 0 to 127, finite `f32` floats). Other
+values are compiled, so the compiler reports those that do not fit. Bounded
+file, slot, value and interned-string budgets stop indefinite
 growth. The transport uses a random token, bounded frames and blocking idle reads;
 a disconnected receiver does not impose repeated reconnect delays on future edits.
 
