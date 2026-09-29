@@ -6,8 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-cranpose = { version = "0.1.173", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "631bf7ca9159c14a123191b71d893b6cc92d357c", features = ["embed"] }
-cranpose-core = { version = "0.1.173", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "631bf7ca9159c14a123191b71d893b6cc92d357c" }
+cranpose = { version = "0.1.175", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49e7a781bfbab626f4ea3f6aadbdc2c1eb3e06b", features = ["embed"] }
+cranpose-core = { version = "0.1.175", git = "https://github.com/samoylenkodmitry/Cranpose", rev = "a49e7a781bfbab626f4ea3f6aadbdc2c1eb3e06b" }
 cranpose-plugin-ux = { path = "../ux" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
