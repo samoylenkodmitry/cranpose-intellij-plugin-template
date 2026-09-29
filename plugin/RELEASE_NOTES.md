@@ -1,4 +1,10 @@
-# Cranpose plugin template 0.8.1
+# Cranpose plugin template 0.8.2
+
+- The preview controller reconnection test turns off automatic preview start,
+  so controllers that start a preview on their own, like Cranpose Studio
+  0.14.4, can run it. No behavior change in the SDK.
+
+## Included since 0.8.1
 
 - Live values for literals that have not run yet apply immediately again. 0.8.0
   compiled every value edit in a file that had such a literal, for example an

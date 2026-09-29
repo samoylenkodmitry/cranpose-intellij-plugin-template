@@ -1222,10 +1222,12 @@ pub fn integration_test(project: Arc<Project>, j: &mut J<'_>) -> Result<()> {
     use anyhow::ensure;
     use std::time::Instant;
     let saved = project.property(j, "cranpose.studio")?;
+    // Controllers that start a preview on their own (Cranpose Studio) would
+    // launch one here; this test covers the controller alone.
     project.set_property(
         j,
         "cranpose.studio",
-        r#"{"width":612,"height":520,"inspect":true}"#,
+        r#"{"width":612,"height":520,"inspect":true,"autoStart":false}"#,
     )?;
     let workspace = Workspace::new(project.clone(), j, j.null()?)?;
     bounds(j, workspace.component(), 0, 0, 720, 620)?;
