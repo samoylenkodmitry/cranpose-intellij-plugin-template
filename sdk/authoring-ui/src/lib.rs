@@ -405,25 +405,14 @@ pub fn ShowcaseCard() {
             .padding(24.0),
         ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(14.0)),
         move || {
-            Text("CRANPOSE", Modifier::empty(), style(c.accent, 11.0));
+            Text("Showcase", Modifier::empty(), style(c.text, 20.0));
             Text(
-                "Start with something beautiful.",
-                Modifier::empty(),
-                style(c.text, 24.0),
-            );
-            Text("Showcase", Modifier::empty(), style(c.text, 17.0));
-            Text(
-                "A native Rust application with a star chart, liquid glass and custom GPU shaders.",
+                "A sample Cranpose application with a star chart, glass effects and custom shaders. It builds for desktop, web, Android and iOS.",
                 Modifier::empty().fill_max_width(),
                 style(c.muted, 13.0),
             );
             Text(
-                "Desktop · Web · Android · iOS",
-                Modifier::empty(),
-                style(c.accent, 12.0),
-            );
-            Text(
-                "Showcase is included — create your project offline.\nStudio prepares a desktop run configuration and opens the preview.\nThe first build needs Rust and downloads dependencies.",
+                "The sample comes with the plugin, so creating the project needs no network.\nThe project opens with a desktop run configuration and the preview.\nThe first build needs Rust and downloads the dependencies.",
                 Modifier::empty().fill_max_width(),
                 style(c.muted, 12.0),
             );

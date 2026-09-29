@@ -379,7 +379,7 @@ pub(crate) fn ControlHint(status: super::Status, colors: Colors) {
         super::Status::Invalid(hint) => (hint.to_owned(), Color(0.92, 0.62, 0.40, 1.0)),
         super::Status::Failed(error) => (error, Color(0.92, 0.48, 0.45, 1.0)),
         _ => (
-            "Changes apply as you edit · Undo in the editor".to_owned(),
+            "Applied as you change it. Undo in the editor reverts it.".to_owned(),
             colors.muted,
         ),
     };

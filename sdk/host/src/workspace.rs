@@ -329,10 +329,14 @@ impl Workspace {
             return Ok(());
         }
         let Some(cargo) = model::cargo_path() else {
-            self.event(id, "stopped", json!({
-                "setup":"rust",
-                "message":"Install Rust to build your preview, then choose Retry preview. Your project and run configuration are ready."
-            }));
+            self.event(
+                id,
+                "stopped",
+                json!({
+                    "setup":"rust",
+                    "message":"Rust is not installed. Install it, then choose Retry."
+                }),
+            );
             return Ok(());
         };
         let mut options = request["options"].clone();

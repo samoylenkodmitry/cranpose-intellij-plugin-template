@@ -34,7 +34,9 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         for (count, padding) in fixtures {
             let mut source = String::from("// 🦀 placement fixture\n#[composable]\nfn Card(){\n");
             for index in 0..count {
-                source.push_str(&format!("    Text(\"label {index}\");\n"));
+                // Strings get no glyph; numbers do. The emoji keeps UTF-16 offsets
+                // apart from byte offsets on every line.
+                source.push_str(&format!("    Space({index}); // 🦀\n"));
             }
             source.push_str("}\n");
             source.push_str(&"// unrelated source padding\n".repeat(padding));
@@ -73,11 +75,7 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                     };
                     for mode in modes {
                         let identities = identities(project);
-                        let token = if edit % 2 == 0 {
-                            "\"label 🦀\""
-                        } else {
-                            "\"label x\""
-                        };
+                        let token = if edit % 2 == 0 { "4096" } else { "7" };
                         edit += 1;
                         let range = &catalog.literals[0].range;
                         write(

@@ -118,7 +118,7 @@ fn Header(palette: Palette) {
             heading(palette.text),
         );
         Text(
-            "Rendered off screen by wgpu, streamed into the IDE",
+            "Drawn by Cranpose in a separate process",
             Modifier::empty(),
             caption(palette.muted),
         );
@@ -299,7 +299,7 @@ fn MessageCard(palette: Palette, draft: TextFieldState) {
         Action(palette, "Send notification", move || {
             let text = draft.text();
             let content = if text.is_empty() {
-                "Hello from Cranpose!".to_string()
+                "Hello from Cranpose".to_string()
             } else {
                 text
             };
