@@ -39,6 +39,7 @@ struct State {
     viewport: [i32; 2],
     trace: Option<crate::feedback::Trace>,
     last_frame: Option<std::time::Instant>,
+    menu: Option<i64>,
 }
 impl Workspace {
     pub fn has_preview(&self) -> bool {
@@ -99,6 +100,7 @@ impl Workspace {
                 viewport: [0, 0],
                 trace: None,
                 last_frame: None,
+                menu: None,
             }),
             closed: AtomicBool::new(false),
         });
@@ -254,6 +256,16 @@ impl Workspace {
             "layout" => {
                 self.state.lock().expect("workspace").placement = request;
                 self.layout(j)?;
+            }
+            "menu" => self.menu(j, &request)?,
+            "tooltip" => {
+                let text = request["text"].as_str().filter(|text| !text.is_empty());
+                j.void(
+                    self.studio.primary.component(),
+                    "setToolTipText",
+                    "(Ljava/lang/String;)V",
+                    &[text.map_or(A::Null, A::S)],
+                )?;
             }
             "message" => {
                 let child = self.state.lock().expect("workspace").active.clone();
@@ -567,6 +579,53 @@ impl Workspace {
             }));
         panel.start(j)
     }
+    /// A native IDE list popup at a Studio anchor. It overlaps the running
+    /// application surface and reports the chosen item as a `studio.command`.
+    fn menu(self: &Arc<Self>, j: &mut J<'_>, request: &Value) -> Result<()> {
+        let items = request["items"].as_array().cloned().unwrap_or_default();
+        let menu = model::s(request, "menu");
+        let weak = Arc::downgrade(self);
+        let Some((popup, id)) = crate::popup::list(j, &items, move |item| {
+            if let Some(workspace) = weak.upgrade() {
+                workspace.command(json!({"action":"menu","menu":menu,"item":item}));
+            }
+        })?
+        else {
+            return Ok(());
+        };
+        // One menu at a time: the previous step's callbacks are released here.
+        if let Some(previous) = self.state.lock().expect("workspace").menu.replace(id) {
+            jvm::unregister(previous);
+        }
+        let number = |key: &str| request[key].as_f64().unwrap_or_default() as i32;
+        let minimum = j.new(
+            "java/awt/Dimension",
+            "(II)V",
+            &[A::I(number("width").max(160)), A::I(1)],
+        )?;
+        j.void(
+            &popup,
+            "setMinimumSize",
+            "(Ljava/awt/Dimension;)V",
+            &[A::O(&minimum)],
+        )?;
+        let point = j.new(
+            "java/awt/Point",
+            "(II)V",
+            &[A::I(number("x")), A::I(number("y"))],
+        )?;
+        let relative = j.new(
+            "com/intellij/ui/awt/RelativePoint",
+            "(Ljava/awt/Component;Ljava/awt/Point;)V",
+            &[A::O(self.studio.primary.component()), A::O(&point)],
+        )?;
+        j.void(
+            &popup,
+            "show",
+            "(Lcom/intellij/ui/awt/RelativePoint;)V",
+            &[A::O(&relative)],
+        )
+    }
     pub fn layout(&self, j: &mut J<'_>) -> Result<()> {
         let Some(component) = self.component.get() else {
             return Ok(());
@@ -717,6 +776,9 @@ impl Workspace {
         let children = {
             let mut state = self.state.lock().expect("workspace");
             state.pending.clear();
+            if let Some(menu) = state.menu.take() {
+                jvm::unregister(menu);
+            }
             [state.active.take(), state.candidate.take()]
         };
         for (_, panel) in children.into_iter().flatten() {

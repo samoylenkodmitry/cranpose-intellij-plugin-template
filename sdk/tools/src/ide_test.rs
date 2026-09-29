@@ -107,7 +107,8 @@ pub fn run(ide: &Path, profile: bool) -> Result<()> {
         info_path.parent().context("metadata directory")?.join(
             launch["javaExecutablePath"]
                 .as_str()
-                .context("Bundled Java")?,
+                // Android Studio's metadata omits its bundled runtime path.
+                .unwrap_or("../jbr/Contents/Home/bin/java"),
         ),
     );
     command.current_dir(&run);

@@ -1,5 +1,5 @@
 use super::*;
-use cranpose::{Slider, SliderSpec};
+use cranpose::{BoxWithConstraintsScope as _, Slider, SliderSpec};
 use cranpose_animation::{Easing, animate_float_as_state_with_initial, animateFloatAsState, tween};
 
 /// Compact theme-aware action with a finite press transition.
@@ -77,7 +77,7 @@ impl NumberRange {
             step: if integer { 1.0 } else { 0.01 },
         }
     }
-    fn bounds(suffix: &str) -> (f64, f64) {
+    pub fn bounds(suffix: &str) -> (f64, f64) {
         match suffix {
             "u8" => (0.0, 255.0),
             "u16" => (0.0, 65535.0),
@@ -298,44 +298,225 @@ pub(crate) fn ControlGlass(color: Color) {
     );
 }
 
+/// Title row: what is being tuned, where it lives, and whether source has it.
 #[composable]
-pub(crate) fn InlineColor(modifier: Modifier, color: [f64; 4]) {
-    let channel = |value: f64| {
-        animateFloatAsState(
-            value as f32,
-            tween(160, Easing::FastOutSlowInEasing),
-            "inline color",
-        )
-        .value()
-    };
-    let c = Color(
-        channel(color[0]),
-        channel(color[1]),
-        channel(color[2]),
-        channel(color[3]),
-    );
-    UiBox(
-        modifier.graphics_layer_value(layer(effect(c, 0.0, 0.0, [0.0; 4]))),
-        BoxSpec::default(),
-        || {},
+pub(crate) fn ControlHeader(
+    title: String,
+    location: String,
+    status: super::Status,
+    colors: Colors,
+) {
+    Row(
+        Modifier::empty().fill_max_width().height(22.0),
+        RowSpec::default()
+            .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+            .vertical_alignment(VerticalAlignment::CenterVertically),
+        move || {
+            StatusDot(status.clone(), colors);
+            Text(
+                title.clone(),
+                Modifier::empty().weight(1.0),
+                super::style(colors.text, 13.0),
+            );
+            Text(
+                location.clone(),
+                Modifier::empty(),
+                super::style(colors.muted, 11.0),
+            );
+        },
     );
 }
+
+/// Green once the host confirmed the source edit, amber while one is in
+/// flight, red when the last input could not be applied.
 #[composable]
-pub(crate) fn ColorPreview(color: [f64; 4]) {
-    let c = Color(
-        color[0] as f32,
-        color[1] as f32,
-        color[2] as f32,
-        color[3] as f32,
+fn StatusDot(status: super::Status, colors: Colors) {
+    let tone = match status {
+        super::Status::Ready => Color(colors.accent.0, colors.accent.1, colors.accent.2, 0.9),
+        super::Status::Pending => Color(0.92, 0.70, 0.30, 1.0),
+        super::Status::Applied => Color(0.36, 0.78, 0.55, 1.0),
+        super::Status::Invalid(_) | super::Status::Failed(_) => Color(0.92, 0.42, 0.40, 1.0),
+    };
+    let glow = animateFloatAsState(
+        if matches!(status, super::Status::Applied) {
+            1.0
+        } else {
+            0.0
+        },
+        tween(420, Easing::FastOutSlowInEasing),
+        "status glow",
     );
     UiBox(
+        Modifier::empty().width(14.0).height(14.0),
+        BoxSpec::default().content_alignment(cranpose::Alignment::CENTER),
+        move || {
+            UiBox(
+                Modifier::empty()
+                    .width(8.0 + 6.0 * glow.value())
+                    .height(8.0 + 6.0 * glow.value())
+                    .rounded_corners(7.0)
+                    .background(Color(tone.0, tone.1, tone.2, 0.25 * glow.value())),
+                BoxSpec::default(),
+                || {},
+            );
+            UiBox(
+                Modifier::empty()
+                    .width(8.0)
+                    .height(8.0)
+                    .rounded_corners(4.0)
+                    .background(tone),
+                BoxSpec::default(),
+                || {},
+            );
+        },
+    );
+}
+
+/// One quiet line: how edits behave, or why the last input waits.
+#[composable]
+pub(crate) fn ControlHint(status: super::Status, colors: Colors) {
+    let (text, color) = match status {
+        super::Status::Invalid(hint) => (hint.to_owned(), Color(0.92, 0.62, 0.40, 1.0)),
+        super::Status::Failed(error) => (error, Color(0.92, 0.48, 0.45, 1.0)),
+        _ => (
+            "Changes apply as you edit · Undo in the editor".to_owned(),
+            colors.muted,
+        ),
+    };
+    Text(
+        text,
+        Modifier::empty().fill_max_width(),
+        super::style(color, 11.0),
+    );
+}
+
+/// Two explicit states; choosing one writes it immediately as its own Undo step.
+#[composable]
+pub(crate) fn BoolSwitch(
+    field: TextFieldState,
+    sent: super::LastSent,
+    status: cranpose_core::MutableState<super::Status>,
+    colors: Colors,
+    request: u64,
+) {
+    let value = field.text() == "true";
+    let position = animateFloatAsState(
+        if value { 1.0 } else { 0.0 },
+        tween(180, Easing::FastOutSlowInEasing),
+        "bool switch",
+    );
+    let sent = sent.clone();
+    Row(
         Modifier::empty()
             .fill_max_width()
-            .height(50.0)
+            .height(36.0)
             .rounded_corners(9.0)
-            .graphics_layer_value(layer(effect(c, 0.0, 0.0, [0.0; 4]))),
-        BoxSpec::default(),
-        || {},
+            .background(colors.surface)
+            .padding(3.0),
+        RowSpec::default().vertical_alignment(VerticalAlignment::CenterVertically),
+        move || {
+            let sent = sent.clone();
+            UiBox(
+                Modifier::empty().fill_max_size(),
+                BoxSpec::default(),
+                move || {
+                    let sent = sent.clone();
+                    cranpose::BoxWithConstraints(Modifier::empty().fill_max_size(), move |scope| {
+                        let half = scope.constraints().max_width * 0.5;
+                        UiBox(
+                            Modifier::empty()
+                                .offset(half * position.value(), 0.0)
+                                .width(half)
+                                .fill_max_height()
+                                .rounded_corners(7.0)
+                                .background(Color(
+                                    colors.accent.0,
+                                    colors.accent.1,
+                                    colors.accent.2,
+                                    0.22,
+                                )),
+                            BoxSpec::default(),
+                            || {},
+                        );
+                    });
+                    Row(
+                        Modifier::empty().fill_max_size(),
+                        RowSpec::default().vertical_alignment(VerticalAlignment::CenterVertically),
+                        move || {
+                            for option in ["false", "true"] {
+                                let sent = sent.clone();
+                                let selected = (option == "true") == value;
+                                UiBox(
+                                    Modifier::empty().weight(1.0).fill_max_height().clickable(
+                                        move |_| {
+                                            if field.text() != option {
+                                                *sent.borrow_mut() = option.to_owned();
+                                                field.set_text(option);
+                                                status.set(super::Status::Pending);
+                                                submit(option, request);
+                                            }
+                                        },
+                                    ),
+                                    BoxSpec::default()
+                                        .content_alignment(cranpose::Alignment::CENTER),
+                                    move || {
+                                        Text(
+                                            option,
+                                            Modifier::empty(),
+                                            super::style(
+                                                if selected { colors.text } else { colors.muted },
+                                                13.0,
+                                            ),
+                                        );
+                                    },
+                                );
+                            }
+                        },
+                    );
+                },
+            );
+        },
+    );
+}
+
+/// The swatch and its editable hex form, side by side.
+#[composable]
+pub(crate) fn ColorField(
+    field: TextFieldState,
+    draft: cranpose_core::MutableState<super::color::ColorDraft>,
+    colors: Colors,
+) {
+    Row(
+        Modifier::empty().fill_max_width().height(36.0),
+        RowSpec::default()
+            .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+            .vertical_alignment(VerticalAlignment::CenterVertically),
+        move || {
+            let c = draft.get().rgba;
+            UiBox(
+                Modifier::empty()
+                    .width(36.0)
+                    .height(36.0)
+                    .graphics_layer_value(layer(effect(
+                        Color(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32),
+                        0.0,
+                        0.0,
+                        [0.0; 4],
+                    ))),
+                BoxSpec::default(),
+                || {},
+            );
+            BasicTextField(
+                field,
+                Modifier::empty()
+                    .weight(1.0)
+                    .height(36.0)
+                    .rounded_corners(8.0)
+                    .background(colors.surface)
+                    .padding(9.0),
+                super::style(colors.text, 14.0),
+            );
+        },
     );
 }
 #[composable]
@@ -426,6 +607,8 @@ pub(crate) fn NumberControls(
     field: TextFieldState,
     integer: bool,
     suffix: String,
+    sent: super::LastSent,
+    status: cranpose_core::MutableState<super::Status>,
     colors: Colors,
     request: u64,
 ) {
@@ -435,48 +618,41 @@ pub(crate) fn NumberControls(
     let minimum = remember(|| TextFieldState::new(range.get().min.to_string())).with(|s| *s);
     let maximum = remember(|| TextFieldState::new(range.get().max.to_string())).with(|s| *s);
     let step = remember(|| TextFieldState::new(range.get().step.to_string())).with(|s| *s);
-    let error = rememberMutableStateOf(String::new);
     let gesture = rememberMutableStateOf(|| 1u64);
+    // Range fields are live too: a complete, valid range replaces the slider's.
+    let (low, high, grain) = (minimum.text(), maximum.text(), step.text());
+    cranpose_core::SideEffect(move || {
+        if let Some(next) = NumberRange::parse(&low, &high, &grain, integer)
+            .filter(|r| r.min >= bounds.0 && r.max <= bounds.1)
+            && next != range.get()
+        {
+            range.set(next);
+        }
+    });
     Column(
         Modifier::empty().fill_max_width(),
-        ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(6.0)),
+        ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(4.0)),
         move || {
-            // Leave space below the main field for its selection toolbar.
-            UiBox(Modifier::empty().height(42.0), BoxSpec::default(), || {});
-            Row(
-                Modifier::empty().fill_max_width(),
-                RowSpec::default()
-                    .horizontal_arrangement(LinearArrangement::SpaceBetween)
-                    .vertical_alignment(VerticalAlignment::CenterVertically),
-                move || {
-                    Text(
-                        "SEEK TO PREVIEW",
-                        Modifier::empty(),
-                        style(colors.muted, 10.0),
-                    );
-                    Text(
-                        format!("{} → {}", range.get().min, range.get().max),
-                        Modifier::empty(),
-                        style(colors.muted, 11.0),
-                    );
-                },
-            );
-            let safe = field
+            // Incomplete typing keeps the slider at the last value sent to source.
+            let current = field
                 .text()
                 .parse::<f64>()
-                .is_ok_and(|v| v.abs() <= 9_007_199_254_740_991.0);
-            if safe {
+                .or_else(|_| sent.borrow().parse::<f64>());
+            if let Ok(current) = current.as_ref().copied()
+                && current.abs() <= 9_007_199_254_740_991.0
+            {
+                let sent = sent.clone();
                 Seekbar(
-                    range
-                        .get()
-                        .fraction(field.text().parse().unwrap_or_default()),
+                    range.get().fraction(current),
                     colors,
                     0,
                     [0.0; 4],
                     move |fraction| {
                         let value = range.get().at(fraction, integer);
                         if field.text() != value {
+                            *sent.borrow_mut() = value.clone();
                             field.set_text(&value);
+                            status.set(super::Status::Pending);
                             seek(&value, gesture.get(), request);
                         }
                     },
@@ -486,55 +662,43 @@ pub(crate) fn NumberControls(
                 Text(
                     "Use exact input outside ±2^53",
                     Modifier::empty(),
-                    style(colors.muted, 11.0),
+                    super::style(colors.muted, 11.0),
                 );
             }
             Row(
-                Modifier::empty().fill_max_width(),
+                Modifier::empty().fill_max_width().height(26.0),
                 RowSpec::default()
-                    .horizontal_arrangement(LinearArrangement::spaced_by(8.0))
+                    .horizontal_arrangement(LinearArrangement::spaced_by(6.0))
                     .vertical_alignment(VerticalAlignment::CenterVertically),
                 move || {
-                    for (label, state) in [("Min", minimum), ("Max", maximum), ("Step", step)] {
-                        Column(
-                            Modifier::empty().width(72.0),
-                            ColumnSpec::default(),
-                            move || {
-                                Text(label, Modifier::empty(), style(colors.muted, 10.0));
-                                BasicTextField(
-                                    state,
-                                    Modifier::empty()
-                                        .fill_max_width()
-                                        .height(28.0)
-                                        .rounded_corners(5.0)
-                                        .background(colors.surface)
-                                        .padding(5.0),
-                                    style(colors.text, 12.0),
-                                );
-                            },
-                        );
-                    }
-                    ControlButton("Set range", colors, move || {
-                        if let Some(next) = NumberRange::parse(
-                            &minimum.text(),
-                            &maximum.text(),
-                            &step.text(),
-                            integer,
-                        )
-                        .filter(|r| r.min >= bounds.0 && r.max <= bounds.1)
-                        {
-                            range.set(next);
-                            error.set(String::new());
-                        } else {
-                            error.set("Use a valid range for this type and a positive step".into());
-                        }
-                    });
+                    RangeField(minimum, colors);
+                    UiBox(Modifier::empty().weight(1.0), BoxSpec::default(), || {});
+                    Text("step", Modifier::empty(), super::style(colors.muted, 10.0));
+                    RangeField(step, colors);
+                    UiBox(Modifier::empty().weight(1.0), BoxSpec::default(), || {});
+                    RangeField(maximum, colors);
                 },
             );
-            if !error.get().is_empty() {
-                Text(error.get(), Modifier::empty(), style(colors.muted, 11.0));
-            }
         },
+    );
+}
+
+#[composable]
+fn RangeField(state: TextFieldState, colors: Colors) {
+    BasicTextField(
+        state,
+        Modifier::empty()
+            .width(64.0)
+            .height(24.0)
+            .rounded_corners(6.0)
+            .background(Color(
+                colors.surface.0,
+                colors.surface.1,
+                colors.surface.2,
+                0.6,
+            ))
+            .padding(5.0),
+        super::style(colors.muted, 11.0),
     );
 }
 
@@ -542,42 +706,32 @@ pub(crate) fn NumberControls(
 pub(crate) fn ColorControls(
     field: TextFieldState,
     draft: cranpose_core::MutableState<super::color::ColorDraft>,
+    sent: super::LastSent,
+    status: cranpose_core::MutableState<super::Status>,
     colors: Colors,
     request: u64,
     alpha: bool,
 ) {
-    let mut next = draft.get();
-    if next.sync_text(&field.text()) == Some(true) {
-        draft.set(next);
-    }
     let gesture = rememberMutableStateOf(|| 1u64);
     Column(
         Modifier::empty().fill_max_width(),
-        ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(4.0)),
+        ColumnSpec::default().vertical_arrangement(LinearArrangement::spaced_by(2.0)),
         move || {
-            ColorPreview(draft.get().rgba);
-            Text(
-                if alpha {
-                    "Drag to preview · one Undo per gesture"
-                } else {
-                    "RGB · opaque · one Undo per gesture"
-                },
-                Modifier::empty().padding(4.0),
-                style(colors.muted, 10.0),
-            );
             for (index, label) in ["Hue", "Saturation", "Brightness", "Opacity"]
                 .into_iter()
                 .enumerate()
                 .take(if alpha { 4 } else { 3 })
             {
+                let sent = sent.clone();
                 cranpose::key(index, move || {
+                    let sent = sent.clone();
                     Row(
                         Modifier::empty().fill_max_width(),
                         RowSpec::default()
                             .horizontal_arrangement(LinearArrangement::SpaceBetween)
                             .vertical_alignment(VerticalAlignment::CenterVertically),
                         move || {
-                            Text(label, Modifier::empty(), style(colors.muted, 11.0));
+                            Text(label, Modifier::empty(), super::style(colors.muted, 11.0));
                             Text(
                                 if index == 0 {
                                     format!("{:.0}°", draft.get().hsva[index] * 360.0)
@@ -585,7 +739,7 @@ pub(crate) fn ColorControls(
                                     format!("{:.0}%", draft.get().hsva[index] * 100.0)
                                 },
                                 Modifier::empty(),
-                                style(colors.text, 11.0),
+                                super::style(colors.text, 11.0),
                             );
                         },
                     );
@@ -597,7 +751,9 @@ pub(crate) fn ColorControls(
                         move |fraction| {
                             let mut next = draft.get();
                             next.seek(index, fraction);
+                            *sent.borrow_mut() = next.text.clone();
                             field.set_text(&next.text);
+                            status.set(super::Status::Pending);
                             seek(&next.source, gesture.get(), request);
                             draft.set(next);
                         },

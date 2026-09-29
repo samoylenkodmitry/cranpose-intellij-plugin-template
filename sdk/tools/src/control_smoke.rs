@@ -18,6 +18,10 @@ use std::{
 pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
     let mut checks = Vec::new();
     let select_all_modifier = if cfg!(target_os = "macos") { 8 } else { 2 };
+    // Popup geometry at 1x: 14px padding, 22px header, 10px gaps, 36px field.
+    const FIELD_Y: f32 = 64.0;
+    const TRACK_START: f32 = 22.0;
+    const TRACK_SPAN: f32 = 336.0;
     for scale in [1, 2] {
         let output = log.parent().unwrap_or(Path::new("."));
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
@@ -49,119 +53,106 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             crate::ui_probe::FrameCapture::default(),
         ));
         let host = Host::capturing(stream, &token, Some(capture.clone()))?;
-        host.send(
-            Packet::new(1)
-                .int(0)
-                .int(340 * scale)
-                .int(240 * scale)
-                .float(scale as f32)
-                .float(60.0),
-        )?;
+        resize(&host, scale, 340, 124)?;
         host.send(Packet::new(13).int(0).byte(1))?;
         host.send(Packet::message(
             "ide.authoring.control",
             &json!({"literal":{"kind":"string","value":"Original value"}}).to_string(),
         ))?;
-        verify_text(&host, "Apply")?;
+        verify_text(&host, "Changes apply as you edit · Undo in the editor")?;
         let cold_ready_ms = cold_started.elapsed().as_secs_f64() * 1000.0;
-        pointer(&host, 70.0, 66.0)?;
-        key(&host, "KeyA", select_all_modifier)?;
-        host.send(Packet::new(8).int(0).text("Pointer edit"))?;
-        // Selecting text opens the floating selection menu, which used to cover
-        // the action row. Test the actual hit targets, not just their bounds.
-        key(&host, "KeyA", select_all_modifier)?;
-        let menu = verify_text(&host, "Copy")?;
-        click(&host, &menu, "Apply")?;
-        expect_edit(&host, "Pointer edit")?;
-        // The first host acknowledgment changes the footer text and can wrap it
-        // on another platform's fonts. Wait for that layout before targeting Reset.
-        verify_text(&host, "Source updated · Undo in the editor")?;
-        let menu = verify_text(&host, "Copy")?;
-        click(&host, &menu, "Reset")?;
-        if let Err(error) = expect_edit(&host, "Original value") {
-            capture
-                .lock()
-                .expect("capture")
-                .save(&output.join(format!("authoring-controls-reset-failure-{scale}.png")))?;
-            return Err(error);
-        }
+        // Typing applies each complete value into one Undo group.
+        replace_text(&host, 100.0, FIELD_Y, "Pointer", select_all_modifier)?;
+        let first = expect_value(&host, "Pointer")?;
+        host.send(Packet::new(8).int(0).text(" edit"))?;
+        let second = expect_value(&host, "Pointer edit")?;
+        ensure!(
+            first["gesture"] == 0 && second["gesture"] == 0,
+            "Typing must share one Undo group: {first} {second}"
+        );
         let mut typed = Vec::new();
-        for (kind, initial, action, changed) in [
-            ("int", "41", "+", "42"),
-            ("float", "1.5", "−", "0.5"),
-            ("bool", "true", "Toggle", "false"),
+        for (kind, initial, entered, incomplete, hint) in [
+            (
+                "int",
+                "41",
+                "42",
+                "-",
+                "Enter a whole number in range for this type",
+            ),
+            ("float", "1.5", "0.5", "0.", "Enter a finite number"),
         ] {
-            resize(
-                &host,
-                scale,
-                if kind == "bool" { 340 } else { 400 },
-                if kind == "bool" { 240 } else { 380 },
-            )?;
+            resize(&host, scale, 380, 196)?;
             host.send(Packet::message(
                 "ide.authoring.control",
                 &json!({"literal":{"kind":kind,"value":initial}}).to_string(),
             ))?;
-            verify_text(&host, kind)?;
-            pointer(&host, 70.0, 66.0)?;
-            key(&host, "KeyA", select_all_modifier)?;
-            let menu = verify_text(&host, "Copy")?;
-            click(&host, &menu, action)?;
-            expect_edit(&host, changed)?;
-            key(&host, "KeyA", select_all_modifier)?;
-            let menu = verify_text(&host, "Copy")?;
-            click(&host, &menu, "Reset")?;
-            expect_edit(&host, initial)?;
-            typed.push(json!({"kind":kind,"action":action,"reset":true}));
+            // Both numeric kinds share a title; wait for this control's value.
+            verify_text(&host, initial)?;
+            replace_text(&host, 100.0, FIELD_Y, incomplete, select_all_modifier)?;
+            verify_text(&host, hint)?;
+            expect_silence(&host)?;
+            replace_text(&host, 100.0, FIELD_Y, entered, select_all_modifier)?;
+            expect_edit(&host, entered)?;
+            typed.push(json!({"kind":kind,"entered":entered,"incompleteHeld":incomplete}));
         }
-        resize(&host, scale, 400, 380)?;
+        resize(&host, scale, 300, 124)?;
+        host.send(Packet::message(
+            "ide.authoring.control",
+            &json!({"literal":{"kind":"bool","value":"true"}}).to_string(),
+        ))?;
+        let view = verify_text(&host, "false")?;
+        click(&host, &view, "false")?;
+        let toggled = expect_value(&host, "false")?;
+        ensure!(
+            toggled.get("gesture").is_none(),
+            "Each toggle is its own Undo step"
+        );
+        typed.push(json!({"kind":"bool","entered":"false"}));
+        resize(&host, scale, 380, 196)?;
         host.send(Packet::message(
             "ide.authoring.control",
             &json!({"literal":{"kind":"int","value":"41"}}).to_string(),
         ))?;
-        let view = verify_text(&host, "Set range")?;
-        for (label, value) in [("Min", "-20"), ("Max", "40"), ("Step", "5")] {
-            let node = text_node(&view, label).context("range field label")?;
-            let (x, _) = center(node);
-            pointer(
-                &host,
-                x,
-                node["y"].as_f64().context("label y")? as f32
-                    + node["height"].as_f64().context("height")? as f32
-                    + 14.0,
-            )?;
-            key(&host, "KeyA", select_all_modifier)?;
-            host.send(Packet::new(8).int(0).text(value))?;
+        let view = verify_text(&host, "step")?;
+        // Range fields apply as soon as they form a valid range.
+        for (current, value) in [("0", "-20"), ("100", "40"), ("1", "5")] {
+            let node = text_node(&view, current).context("range field")?;
+            let (x, y) = center(node);
+            replace_text(&host, x, y, value, select_all_modifier)?;
         }
-        let view = verify_text(&host, "Set range")?;
-        click(&host, &view, "Set range")?;
-        let view = verify_text(&host, "-20 → 40")?;
+        expect_silence(&host)?;
+        let step = text_node(&verify_text(&host, "step")?, "step")
+            .context("step label")?
+            .clone();
+        let (_, row) = center(&step);
+        let y = row - 13.0 - 4.0 - 14.0;
         thread::sleep(Duration::from_millis(200));
         capture
             .lock()
             .expect("capture")
             .save(&output.join(format!("authoring-controls-number-{scale}.png")))?;
-        let label = text_node(&view, "SEEK TO PREVIEW").context("seek label")?;
-        let y = label["y"].as_f64().context("y")? as f32
-            + label["height"].as_f64().context("height")? as f32
-            + 6.0
-            + 14.0;
-        host.send(Packet::new(3).int(0).float(24.0).float(y))?;
+        host.send(Packet::new(3).int(0).float(TRACK_START).float(y))?;
         let first = expect_value(&host, "-20")?;
         for fraction in [0.5f32, 1.0] {
             host.send(
                 Packet::new(2)
                     .int(0)
-                    .float(24.0 + 352.0 * fraction)
+                    .float(TRACK_START + TRACK_SPAN * fraction)
                     .float(y),
             )?;
             let changed = expect_value(&host, if fraction == 0.5 { "10" } else { "40" })?;
             ensure!(
-                changed["gesture"] == first["gesture"],
-                "One drag must retain its Undo group"
+                changed["gesture"] == first["gesture"] && first["gesture"] != 0,
+                "One drag must retain its own Undo group"
             );
         }
-        host.send(Packet::new(4).int(0).float(376.0).float(y))?;
-        resize(&host, scale, 400, 490)?;
+        host.send(
+            Packet::new(4)
+                .int(0)
+                .float(TRACK_START + TRACK_SPAN)
+                .float(y),
+        )?;
+        resize(&host, scale, 380, 330)?;
         host.send(Packet::message(
             "ide.authoring.control",
             &json!({"literal":{"kind":"color","value":"1,0,0,1"}}).to_string(),
@@ -172,68 +163,47 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             .lock()
             .expect("capture")
             .save(&output.join(format!("authoring-controls-color-{scale}.png")))?;
-        let label = text_node(&view, "Hue").context("hue label")?;
-        let y = label["y"].as_f64().context("y")? as f32
-            + label["height"].as_f64().context("height")? as f32
-            + 4.0
-            + 14.0;
-        host.send(Packet::new(3).int(0).float(200.0).float(y))?;
+        let track = |view: &Value, label: &str| -> Result<f32> {
+            let node = text_node(view, label).context("color track label")?;
+            Ok(node["y"].as_f64().context("y")? as f32
+                + node["height"].as_f64().context("height")? as f32
+                + 2.0
+                + 14.0)
+        };
+        let y = track(&view, "Hue")?;
+        let x = TRACK_START + TRACK_SPAN * 0.5;
+        host.send(Packet::new(3).int(0).float(x).float(y))?;
         expect_edit(&host, "0.0,1.0,1.0,1.0")?;
-        host.send(Packet::new(4).int(0).float(200.0).float(y))?;
+        host.send(Packet::new(4).int(0).float(x).float(y))?;
         expect_edit(&host, "0.0,1.0,1.0,1.0")?;
-        let view = verify_text(&host, "Reset")?;
-        click(&host, &view, "Reset")?;
-        expect_edit(&host, "1,0,0,1")?;
-        // The hex label is only a display representation. Opening, applying,
-        // resetting or changing opacity must not quantize the source RGB.
+        // The hex label is only a display representation. Opening or changing
+        // opacity must not quantize the source RGB.
         let precise = "0.19,0.42,0.31,0.123456789";
         host.send(Packet::message(
             "ide.authoring.control",
             &json!({"literal":{"kind":"color","value":precise}}).to_string(),
         ))?;
         let view = verify_text(&host, "#306B4F1F")?;
-        click(&host, &view, "Apply")?;
-        expect_edit(&host, precise)?;
+        expect_silence(&host)?;
         for (label, fraction, expected) in [
             ("Opacity", 0.5, "0.19,0.42,0.31,0.5"),
             ("Hue", 0.75, "0.305,0.19,0.42,0.5"),
             ("Opacity", 0.25, "0.305,0.19,0.42,0.25"),
         ] {
-            let view = verify_text(&host, label)?;
-            let node = text_node(&view, label).context("color track label")?;
-            let y = node["y"].as_f64().context("y")? as f32
-                + node["height"].as_f64().context("height")? as f32
-                + 18.0;
-            let x = 24.0 + 352.0 * fraction;
+            let y = track(&view, label)?;
+            let x = TRACK_START + TRACK_SPAN * fraction;
             for kind in [3, 4] {
                 host.send(Packet::new(kind).int(0).float(x).float(y))?;
                 expect_edit(&host, expected)?;
             }
-            let view = verify_text(&host, "Apply")?;
-            click(&host, &view, "Apply")?;
-            expect_edit(&host, expected)?;
         }
-        let view = verify_text(&host, "Reset")?;
-        click(&host, &view, "Reset")?;
-        expect_edit(&host, precise)?;
-        click(&host, &view, "Apply")?;
-        expect_edit(&host, precise)?;
-        pointer(&host, 70.0, 66.0)?;
-        key(&host, "KeyA", select_all_modifier)?;
-        host.send(Packet::new(8).int(0).text("#12"))?;
-        let view = verify_text(&host, "Apply")?;
-        click(&host, &view, "Apply")?;
-        let view = verify_text(&host, "Enter #RRGGBB or #RRGGBBAA")?;
-        click(&host, &view, "Reset")?;
-        expect_edit(&host, precise)?;
-        pointer(&host, 70.0, 66.0)?;
-        key(&host, "KeyA", select_all_modifier)?;
-        host.send(Packet::new(8).int(0).text("#12345678"))?;
-        let view = verify_text(&host, "Apply")?;
-        click(&host, &view, "Apply")?;
+        replace_text(&host, 200.0, FIELD_Y, "#12", select_all_modifier)?;
+        verify_text(&host, "Enter #RRGGBB or #RRGGBBAA")?;
+        expect_silence(&host)?;
+        replace_text(&host, 200.0, FIELD_Y, "#12345678", select_all_modifier)?;
         expect_edit(&host, "0.070588,0.203922,0.337255,0.470588")?;
         // Exclude inspector requests and active text-caret blinking from the
-        // settled observation. Apply can retain the field's keyboard focus.
+        // settled observation. Typing retains the field's keyboard focus.
         host.send(Packet::new(13).int(0).byte(0))?;
         thread::sleep(Duration::from_secs(2));
         let before = host.frames.load(std::sync::atomic::Ordering::Relaxed);
@@ -242,17 +212,19 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
         ensure!(idle == 0, "Settled color controls rendered {idle} frames");
         let mut warm_ready_ms = Vec::new();
         for request in 1..=5u64 {
-            resize(&host, scale, 400, 380)?;
+            resize(&host, scale, 380, 196)?;
             let started = Instant::now();
             host.send(Packet::new(13).int(0).byte(1))?;
             host.send(Packet::message("ide.authoring.control", &json!({"request":request,"binding":format!("spacing{request}"),"literal":{"kind":"int","value":"41","range":{"line":7}}}).to_string()))?;
-            let view = verify_text(&host, &format!("spacing{request} · L7"))?;
+            let view = verify_text(&host, &format!("spacing{request}"))?;
             warm_ready_ms.push(started.elapsed().as_secs_f64() * 1000.0);
             ensure!(
-                text_node(&view, "0 → 100").is_some(),
+                text_node(&view, "Number · L7").is_some()
+                    && text_node(&view, "100").is_some()
+                    && text_node(&view, "40").is_none(),
                 "Reused control retained an old custom range"
             );
-            click(&host, &view, "+")?;
+            replace_text(&host, 100.0, FIELD_Y, "42", select_all_modifier)?;
             let edit = expect_value(&host, "42")?;
             ensure!(
                 edit["request"] == request,
@@ -266,10 +238,31 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             "Control descendants survived shutdown"
         );
         checks.push(
-            json!({"scale":scale,"applyWithSelectionMenu":true,"resetWithSelectionMenu":true,"typedControls":typed,"customRangeDrag":true,"colorDrag":true,"colorPrecision":true,"settledColorFrames":idle,"coldProcessToControlCompositionMs":cold_ready_ms,"warmControlCompositionMs":warm_ready_ms,"reusedSessionIsolation":true}),
+            json!({"scale":scale,"liveTyping":true,"typedControls":typed,"customRangeDrag":true,"colorDrag":true,"colorPrecision":true,"settledColorFrames":idle,"coldProcessToControlCompositionMs":cold_ready_ms,"warmControlCompositionMs":warm_ready_ms,"reusedSessionIsolation":true}),
         );
     }
     Ok(json!({"pointerControls":checks}))
+}
+
+/// Focus a field, select its text and type a replacement.
+fn replace_text(host: &Host, x: f32, y: f32, text: &str, select_all: u8) -> Result<()> {
+    pointer(host, x, y)?;
+    key(host, "KeyA", select_all)?;
+    host.send(Packet::new(8).int(0).text(text))
+}
+/// Incomplete input and freshly opened controls must leave source untouched.
+fn expect_silence(host: &Host) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_millis(400);
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        if let Ok(event) = host.messages.recv_timeout(left) {
+            let (channel, payload, _) = event.context("Control connection")?;
+            ensure!(
+                channel != "ide.authoring.edit",
+                "Unexpected source edit {payload}"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn pointer(host: &Host, x: f32, y: f32) -> Result<()> {
@@ -316,5 +309,5 @@ fn expect_value(host: &Host, expected: &str) -> Result<Value> {
             return Ok(payload);
         }
     }
-    anyhow::bail!("Pointer control did not submit {expected:?} while selection menu was open")
+    anyhow::bail!("Control did not submit {expected:?}")
 }

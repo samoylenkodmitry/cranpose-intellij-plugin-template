@@ -55,6 +55,7 @@ pub fn dispatch(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Res
             | "ValueGlyph"
             | "PreviewGutter"
             | "PreviewClick"
+            | "MenuStep"
     ) {
         let id = j.id(receiver)?;
         if id == 0 {

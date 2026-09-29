@@ -161,17 +161,21 @@ pub fn tick(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
                                 }
                                 let badge = badge.clone();
                                 let captured = badge.clone();
-                                let weak = Arc::downgrade(project);
                                 let id = jvm::register(move |j, op, args| {
                                     if op == "Badge.calcWidthInPixels" {
-                                        let width = width(j, &args[0], &captured)?;
+                                        let width = crate::glyphs::badge_width(
+                                            j,
+                                            &args[0],
+                                            &captured.label,
+                                        )?;
                                         j.boxed_int(width)
                                     } else {
-                                        if weak.upgrade().is_none_or(|p| {
-                                            !p.authoring.lock().expect("authoring").overlay_ready
-                                        }) {
-                                            paint(j, args, &captured)?;
-                                        }
+                                        crate::glyphs::badge(
+                                            j,
+                                            args,
+                                            &captured.label,
+                                            &captured.tone,
+                                        )?;
                                         j.null()
                                     }
                                 });
@@ -523,174 +527,6 @@ pub fn escape(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
-fn font(j: &mut J<'_>, inlay: &O) -> Result<(O, O)> {
-    let editor = j.obj(
-        inlay,
-        "getEditor",
-        "()Lcom/intellij/openapi/editor/Editor;",
-        &[],
-    )?;
-    let scheme = j.obj(
-        &editor,
-        "getColorsScheme",
-        "()Lcom/intellij/openapi/editor/colors/EditorColorsScheme;",
-        &[],
-    )?;
-    let plain = j.constant(
-        "com/intellij/openapi/editor/colors/EditorFontType",
-        "PLAIN",
-        "Lcom/intellij/openapi/editor/colors/EditorFontType;",
-    )?;
-    let font = j.obj(
-        &scheme,
-        "getFont",
-        "(Lcom/intellij/openapi/editor/colors/EditorFontType;)Ljava/awt/Font;",
-        &[A::O(&plain)],
-    )?;
-    let size = (j.int(&scheme, "getEditorFontSize")? as f32 * 0.82).max(9.0);
-    let font = j.obj(&font, "deriveFont", "(F)Ljava/awt/Font;", &[A::F(size)])?;
-    let component = j.obj(
-        &editor,
-        "getContentComponent",
-        "()Ljavax/swing/JComponent;",
-        &[],
-    )?;
-    Ok((font, component))
-}
-/// Only visible inlays are sent to the Cranpose overlay; locations come from the
-/// editor so scrolling, font changes and other inline hints stay aligned.
-pub fn decorations(
-    project: &Project,
-    j: &mut J<'_>,
-    editor: &O,
-    x: i32,
-    y: i32,
-    height: i32,
-) -> Result<Vec<Value>> {
-    let state = project.stability.lock().expect("stability");
-    let mut result = vec![];
-    for placed in &state.placed {
-        if !j.bool(&placed.inlay, "isValid")? {
-            continue;
-        }
-        let owner = j.obj(
-            &placed.inlay,
-            "getEditor",
-            "()Lcom/intellij/openapi/editor/Editor;",
-            &[],
-        )?;
-        if !j.same(&owner, editor)? {
-            continue;
-        }
-        let rect = j.obj(&placed.inlay, "getBounds", "()Ljava/awt/Rectangle;", &[])?;
-        if rect.is_null() {
-            continue;
-        }
-        let top = j.field_int(&rect, "y")? - y;
-        let h = j.field_int(&rect, "height")?;
-        if top + h < 0 || top > height {
-            continue;
-        }
-        result.push(json!({"kind":"badge","x":j.field_int(&rect,"x")?-x+3,"y":top+2,"width":(j.field_int(&rect,"width")?-6).max(1),"height":(h-4).max(1),"label":placed.badge.label,"tone":placed.badge.tone}));
-        if result.len() >= 128 {
-            break;
-        }
-    }
-    Ok(result)
-}
-fn width(j: &mut J<'_>, inlay: &O, badge: &Badge) -> Result<i32> {
-    let (font, component) = font(j, inlay)?;
-    let metrics = j.obj(
-        &component,
-        "getFontMetrics",
-        "(Ljava/awt/Font;)Ljava/awt/FontMetrics;",
-        &[A::O(&font)],
-    )?;
-    Ok(j.call(
-        &metrics,
-        "stringWidth",
-        "(Ljava/lang/String;)I",
-        &[A::S(&badge.label)],
-    )?
-    .i()?
-        + 16)
-}
-fn paint(j: &mut J<'_>, args: &[O], badge: &Badge) -> Result<()> {
-    let (font, _) = font(j, &args[0])?;
-    let g = j.obj(&args[1], "create", "()Ljava/awt/Graphics;", &[])?;
-    let result = (|| -> Result<()> {
-        let antialias = j.constant(
-            "java/awt/RenderingHints",
-            "KEY_ANTIALIASING",
-            "Ljava/awt/RenderingHints$Key;",
-        )?;
-        let on = j.constant(
-            "java/awt/RenderingHints",
-            "VALUE_ANTIALIAS_ON",
-            "Ljava/lang/Object;",
-        )?;
-        j.void(
-            &g,
-            "setRenderingHint",
-            "(Ljava/awt/RenderingHints$Key;Ljava/lang/Object;)V",
-            &[A::O(&antialias), A::O(&on)],
-        )?;
-        j.void(&g, "setFont", "(Ljava/awt/Font;)V", &[A::O(&font)])?;
-        let metrics = j.obj(&g, "getFontMetrics", "()Ljava/awt/FontMetrics;", &[])?;
-        let x = j.field_int(&args[2], "x")?;
-        let y = j.field_int(&args[2], "y")?;
-        let w = j.field_int(&args[2], "width")?;
-        let h = j.field_int(&args[2], "height")?;
-        let mh = j.int(&metrics, "getHeight")?;
-        let height = (mh + 2).min(h);
-        let top = y + (h - height) / 2;
-        let dark = !j
-            .static_call("com/intellij/ui/JBColor", "isBright", "()Z", &[])?
-            .z()?;
-        let (fg, bg) = match (badge.tone.as_str(), dark) {
-            ("stable", false) => (0x3f7058, 0xebf3ee),
-            ("stable", true) => (0x9cc8b2, 0x28372f),
-            ("warning", false) => (0x825d13, 0xf8f0dc),
-            ("warning", true) => (0xd9ba75, 0x3b3426),
-            ("danger", false) => (0xa24442, 0xfaeae8),
-            ("danger", true) => (0xe4a19b, 0x402c2c),
-            (_, false) => (0x6a6e78, 0xeff0f2),
-            (_, true) => (0x969daa, 0x303238),
-        };
-        let background = j.new("java/awt/Color", "(I)V", &[A::I(bg)])?;
-        j.void(&g, "setColor", "(Ljava/awt/Color;)V", &[A::O(&background)])?;
-        j.void(
-            &g,
-            "fillRoundRect",
-            "(IIIIII)V",
-            &[
-                A::I(x + 3),
-                A::I(top),
-                A::I(w - 6),
-                A::I(height),
-                A::I(6),
-                A::I(6),
-            ],
-        )?;
-        let foreground = j.new("java/awt/Color", "(I)V", &[A::I(fg)])?;
-        j.void(&g, "setColor", "(Ljava/awt/Color;)V", &[A::O(&foreground)])?;
-        let ascent = j.int(&metrics, "getAscent")?;
-        j.void(
-            &g,
-            "drawString",
-            "(Ljava/lang/String;II)V",
-            &[
-                A::S(&badge.label),
-                A::I(x + 8),
-                A::I(top + (height - mh) / 2 + ascent),
-            ],
-        )?;
-        Ok(())
-    })();
-    let disposed = j.void(&g, "dispose", "()V", &[]);
-    result.and(disposed)
-}
-
 #[cfg(feature = "ide-tests")]
 pub(crate) fn integration_test(
     project: &Arc<Project>,
@@ -741,6 +577,10 @@ pub(crate) fn integration_test(
         ensure!(
             j.int(&inlay, "getWidthInPixels")? > 0,
             "Invisible stability badge"
+        );
+        ensure!(
+            crate::glyphs::rendered(j, &inlay)?.len() > 40,
+            "Stability badge did not paint in the editor"
         );
         if revision_delta < 0 || stamp_delta < 0 {
             ensure!(

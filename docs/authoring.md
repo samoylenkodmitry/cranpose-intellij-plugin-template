@@ -47,26 +47,27 @@ the glyph focuses its control. One
 native control renderer is warmed per project and reused across popups. Escape
 and outside clicks dismiss the popup; remaining over the same target does not
 reopen it. Session IDs reject delayed edits from previously displayed values.
-Apply, Reset,
-numeric steps and boolean toggles use one undoable editor command. Stale controls
-refuse to overwrite newer source. Incomplete numeric input never replaces code.
+Stale controls refuse to overwrite newer source.
 
-The value popup keeps its actions in a footer below the text field's floating
-selection menu. Apply uses the IDE accent color. Selection, clipboard actions,
-numeric steps and Reset remain available together without overlapping hit targets.
+Controls have no Apply or Reset: every complete value is written as it is
+entered. Typing shares one Undo group per control session, each slider drag has
+its own, and a boolean switch writes each choice as a separate step. Undo in the
+editor restores earlier values. Incomplete input such as `-`, `0.` or `#12` never
+replaces code; the control explains what it waits for. A status dot in the
+header shows a pending, confirmed or rejected edit.
 
-Numbers also have a seekbar with editable Min, Max and Step. A drag sends complete
-values immediately, with one Undo group per gesture; pending host edits are
-coalesced before the next editor command. Range settings belong to the open
-control and reset when a different control opens. Integer ranges use exact representable values through ±(2^53−1), with
+Numbers also have a seekbar with editable minimum, maximum and step fields,
+which apply once they form a valid range. A drag sends complete values
+immediately; pending host edits are coalesced before the next editor command.
+Range settings belong to the open control and reset when a different control
+opens. Integer ranges use exact representable values through ±(2^53−1), with
 explicit integer suffix bounds; larger integers retain exact text entry.
 
 `Color(r,g,b,a)` and `Color::rgba(r,g,b,a)` with four normalized float literals
 have one color swatch. This includes ordinary non-const palette functions.
 The Cranpose picker accepts hex and provides hue, saturation, brightness and
-opacity sliders. It replaces all four channels atomically; Reset restores their
-original values. Inline swatches show transparency over a checkerboard and animate
-between changed colors. Constants and unresolved named colors remain compiled. RGB/u8 constructors
+opacity sliders. It replaces all four channels atomically. Inline swatches show
+transparency over a checkerboard. Constants and unresolved named colors remain compiled. RGB/u8 constructors
 and computed channels are not grouped; eligible scalar arguments still have
 individual controls inside composables. Helper values take effect when
 the helper is called again.
@@ -81,13 +82,13 @@ function returns and compiler-owned contexts are not guessed. This adds access
 to existing live slots; it does not make every runtime variable live or trace
 through arbitrary helper function calls.
 
-The hex label is a display value: opening the picker or applying it unchanged
-preserves the original float channels. Opacity edits preserve RGB, and HSV edits
+The hex label is a display value: opening the picker never rewrites the
+original float channels. Opacity edits preserve RGB, and HSV edits
 preserve alpha. Newly generated channels use at most six decimal places (at most
 0.0000005 rounding error per normalized channel). This also applies when entering
 a new hex value; every 8-bit channel still converts back to the same byte.
 Slider gestures retain their HSV state without repeatedly converting through
-the hex label. Reset restores the original channels, including their precision.
+the hex label.
 
 Text in `format!`, `std::format!` and `alloc::format!` is live inside composables.
 The private copy preserves compiler-owned fields and adds named runtime text
@@ -116,12 +117,14 @@ accurate. No runtime instrumentation belongs in application release builds.
 
 ## Decorations and tests
 
-Inlays reserve IDE space while a transparent Cranpose overlay draws diamonds,
-static shader underlines and stability badges. Document, viewport, folding,
-inlay and font events invalidate geometry. Unchanged geometry does no rendering
-work. Only visible decorations are sent, with a 256-item rendering budget;
-stability badges have priority. Source navigation adds a 900 ms spectral shader sweep
-following the destination line during scrolling. Button presses and slider
+Value knobs, color swatches, stability badges and composable-call underlines are
+painted by the IDE editor in its own paint pass (`glyphs` module): inlay
+renderers and range highlighters draw with Java2D, so they scroll, fold and wrap
+with the text in the same frame and follow the editor font, scale and theme.
+Hovering a glyph repaints only the affected inlays; a color swatch repaints once
+the edited catalog is parsed. A transparent Cranpose overlay remains only for
+transient effects: source navigation adds a 900 ms spectral shader sweep
+following the destination line, and live edits draw lightning feedback. Button presses and slider
 thumbs have finite transitions; animation respects Cranpose's reduced-motion
 setting. Live controls enter with a finite glass/prism transition. Closing the
 project shuts down its warmed renderer; dismissing a popup releases document
@@ -130,18 +133,18 @@ callbacks and hides the surface. Closing the native process detaches its overlay
 Run `authoring-smoke --binary /path/to/ui --log authoring.log --report authoring.json`
 to verify transparent shader output and zero settled frames over three seconds.
 This small fixture measures only the UI process, not the full IDE. Native IDE
-tests verify wizard adapters, gutter markers, inlay invalidation and transparent
-overlay painting over existing source pixels.
+tests verify wizard adapters, gutter markers, inlay invalidation, native glyph and
+badge painting into an offscreen image, and transparent overlay painting over
+existing source pixels.
 
-The same smoke command exercises live-value controls at 1× and 2× scale. It opens
-the real selection menu, clicks Apply, Reset, numeric steps and Toggle using
-inspected bounds, and verifies the messages sent to the host. The pre-footer UI
-fails this regression because its selection menu intercepts Apply.
-It also drags a custom numeric range, drags and resets a color, saves PNG evidence,
-verifies source-arrival animation, and requires zero settled frames from both
-the editor overlay and the unfocused color control.
-Color checks cover unchanged Apply, independent opacity/HSV changes, Apply after
-Reset, explicit hex input and invalid partial hex. Model tests repeat 1,000
+The same smoke command exercises live-value controls at 1× and 2× scale. It types
+into each kind using inspected bounds and verifies the messages sent to the
+host, including shared typing Undo groups, held incomplete input and the
+boolean switch. It also edits a numeric range live and drags it, drags a color,
+saves PNG evidence, verifies source-arrival animation, and requires zero
+settled frames from both the editor overlay and the unfocused color control.
+Color checks cover opening without rewriting source, independent opacity/HSV
+changes, explicit hex input and invalid partial hex. Model tests repeat 1,000
 close/reopen cycles to check for accumulated quantization.
 
 `hot-smoke --live-values-rounds 6` additionally sends unsaved value updates over

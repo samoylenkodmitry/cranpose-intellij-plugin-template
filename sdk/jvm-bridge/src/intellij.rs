@@ -374,6 +374,24 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
         ],
     );
     add(
+        "MenuStep",
+        "com/intellij/openapi/ui/popup/util/BaseListPopupStep",
+        &[],
+        true,
+        &[
+            (
+                "onChosen",
+                "(Ljava/lang/Object;Z)Lcom/intellij/openapi/ui/popup/PopupStep;",
+            ),
+            ("getTextFor", "(Ljava/lang/Object;)Ljava/lang/String;"),
+            (
+                "getSeparatorAbove",
+                "(Ljava/lang/Object;)Lcom/intellij/openapi/ui/popup/ListSeparator;",
+            ),
+            ("isSpeedSearchEnabled", "()Z"),
+        ],
+    );
+    add(
         "Badge",
         "java/lang/Object",
         &["com/intellij/openapi/editor/EditorCustomElementRenderer"],
