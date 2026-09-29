@@ -688,7 +688,12 @@ pub fn run(mut options: Options) -> Result<()> {
         "Recovery restarted the application"
     );
     let structural = if options.structural_state {
-        Some(structural_edit(&mut host, &cleanup, &pid)?)
+        Some(structural_edit(
+            &mut host,
+            &mut cleanup,
+            &pid,
+            &options.log,
+        )?)
     } else {
         None
     };
@@ -705,7 +710,12 @@ pub fn run(mut options: Options) -> Result<()> {
 /// Structural edits around remembered state must hot-patch in place and keep
 /// the count: a binding above it, a view before the button inside the column's
 /// content, and a view in another composable. The fixture is then restored.
-fn structural_edit(host: &mut Host, cleanup: &Cleanup, pid: &Value) -> Result<Value> {
+fn structural_edit(
+    host: &mut Host,
+    cleanup: &mut Cleanup,
+    pid: &Value,
+    log: &std::path::Path,
+) -> Result<Value> {
     let edited = cleanup
         .original
         .replacen("    let count", "    let spacing = 8.0_f32;\n    let count", 1)
@@ -743,7 +753,25 @@ fn structural_edit(host: &mut Host, cleanup: &Cleanup, pid: &Value) -> Result<Va
         &host.runtime["pid"] == pid,
         "Reverting a structural edit restarted the application"
     );
-    Ok(json!({"kept":8,"saveToSnapshotMs":(observed - saved).as_secs_f64() * 1000.0}))
+    // The click handler has not run since these patches, so the preview does not
+    // know its literal's type. A value that does not fit must reach the compiler.
+    let offset = fs::metadata(log)?.len();
+    fs::write(
+        &cleanup.source,
+        cleanup
+            .original
+            .replace("count.get() + 1", "count.get() + 999999999999999999999"),
+    )?;
+    wait_log(log, offset, "literal out of range", &mut cleanup.child)?;
+    fs::write(&cleanup.source, &cleanup.original)?;
+    host.snapshot(&["Count: 8", "Increment"], 120)?;
+    ensure!(
+        &host.runtime["pid"] == pid,
+        "An unrun literal restarted the application"
+    );
+    Ok(
+        json!({"kept":8,"saveToSnapshotMs":(observed - saved).as_secs_f64() * 1000.0,"unrunLiteral":"compiled"}),
+    )
 }
 fn live_values(source: &str, path: &std::path::Path) -> Result<String> {
     use cranpose_plugin_authoring::{
