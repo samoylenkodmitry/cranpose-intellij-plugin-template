@@ -128,20 +128,6 @@ macro_rules! floating {
     )*};
 }
 floating!(f32, f64);
-/// A literal that has not run since its file was compiled has no known type.
-/// Accept only text that every type of its kind can hold; anything else is
-/// compiled, so the compiler reports literals that do not fit.
-fn fits_every_type(kind: &str, text: &str) -> bool {
-    match kind {
-        "int" => <i8 as Literal>::validate(text) && <u8 as Literal>::validate(text),
-        "float" => <f32 as Literal>::validate(text),
-        "bool" => <bool as Literal>::validate(text),
-        "char" => <char as Literal>::validate(text),
-        "string" => <&'static str as Literal>::validate(text),
-        "color" => color_channels(text).is_some(),
-        _ => false,
-    }
-}
 impl Literal for &'static str {
     const KIND: &'static str = "string";
     fn validate(text: &str) -> bool {
@@ -221,20 +207,13 @@ impl Store {
             {
                 return Err("Invalid live value batch".into());
             }
-            match file.slots.get(&value.id) {
-                Some(slot) if value.kind != slot.kind || !(slot.validate)(&value.value) => {
-                    return Err(format!(
-                        "Value {} does not fit its compiled {} type",
-                        value.id, slot.kind
-                    ));
-                }
-                None if !fits_every_type(&value.kind, &value.value) => {
-                    return Err(format!(
-                        "Value {} has not run yet; compile it to check its type",
-                        value.id
-                    ));
-                }
-                _ => {}
+            if let Some(slot) = file.slots.get(&value.id)
+                && (value.kind != slot.kind || !(slot.validate)(&value.value))
+            {
+                return Err(format!(
+                    "Value {} does not fit its compiled {} type",
+                    value.id, slot.kind
+                ));
             }
             if value.kind == "string" && !self.strings.contains_key(&value.value) {
                 new_strings.insert(value.value.clone(), ());
@@ -302,42 +281,36 @@ mod tests {
         assert_eq!(store.value("src/main.rs", "b", 0, 4u8), 4);
     }
     #[test]
-    fn unrun_literals_accept_only_values_every_type_of_their_kind_holds() {
-        fn apply(
-            store: &mut Store,
-            revision: u64,
-            kind: &str,
-            value: &str,
-        ) -> Result<bool, String> {
-            store.apply(&Update {
-                file: "src/main.rs".into(),
-                schema: "a".into(),
-                revision,
-                values: vec![Value {
-                    id: 0,
-                    kind: kind.into(),
-                    value: value.into(),
-                }],
-            })
-        }
+    fn unrun_literals_never_block_live_edits() {
+        // Slot 0 has run; slot 1, say `tween(300)` in an effect, has not. Every
+        // update carries both, so slot 1 must never make an edit wait.
         let mut store = Store::default();
-        // Only slot 1 has run, as after a patch before a closure is called.
-        store.value("src/main.rs", "a", 1, "");
-        for (kind, value) in [
-            ("int", "999999999999999999999"),
-            ("int", "128"),
-            ("int", "-1"),
-            ("float", "1e39"),
-            ("color", "2,0,0,1"),
-            ("format", "x"),
-        ] {
-            assert!(apply(&mut store, 1, kind, value).is_err(), "{kind} {value}");
-        }
-        assert!(apply(&mut store, 1, "int", "127").expect("every integer holds 127"));
-        assert_eq!(store.value("src/main.rs", "a", 0, 2u8), 127);
-        assert!(apply(&mut store, 2, "int", "200").expect("fits the u8 that ran"));
-        assert!(apply(&mut store, 3, "int", "256").is_err());
-        assert_eq!(store.value("src/main.rs", "a", 0, 2u8), 200);
+        store.value("src/main.rs", "a", 0, 2u8);
+        let edit = |revision, first: &str, second: &str| Update {
+            file: "src/main.rs".into(),
+            schema: "a".into(),
+            revision,
+            values: vec![
+                Value {
+                    id: 0,
+                    kind: "int".into(),
+                    value: first.into(),
+                },
+                Value {
+                    id: 1,
+                    kind: "int".into(),
+                    value: second.into(),
+                },
+            ],
+        };
+        assert!(store.apply(&edit(1, "7", "300")).expect("unrun literal"));
+        assert!(
+            store
+                .apply(&edit(2, "8", "-500"))
+                .expect("edited unrun literal")
+        );
+        assert_eq!(store.value("src/main.rs", "a", 0, 2u8), 8);
+        assert_eq!(store.value("src/main.rs", "a", 1, 300i32), -500);
     }
     #[test]
     fn rejects_nonfinite_and_bounds_interned_string_storage() {

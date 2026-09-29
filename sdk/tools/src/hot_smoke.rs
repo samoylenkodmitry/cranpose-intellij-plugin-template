@@ -693,6 +693,7 @@ pub fn run(mut options: Options) -> Result<()> {
             &mut cleanup,
             &pid,
             &options.log,
+            (x, y),
         )?)
     } else {
         None
@@ -715,6 +716,7 @@ fn structural_edit(
     cleanup: &mut Cleanup,
     pid: &Value,
     log: &std::path::Path,
+    (x, y): (f32, f32),
 ) -> Result<Value> {
     let edited = cleanup
         .original
@@ -753,24 +755,31 @@ fn structural_edit(
         &host.runtime["pid"] == pid,
         "Reverting a structural edit restarted the application"
     );
-    // The click handler has not run since these patches, so the preview does not
-    // know its literal's type. A value that does not fit must reach the compiler.
+    // The click handler has not run since these patches. Its literal must still
+    // update live, without waiting for the compiler, and apply when it runs.
     let offset = fs::metadata(log)?.len();
     fs::write(
         &cleanup.source,
         cleanup
             .original
-            .replace("count.get() + 1", "count.get() + 999999999999999999999"),
+            .replace("count.get() + 1", "count.get() + 500"),
     )?;
-    wait_log(log, offset, "literal out of range", &mut cleanup.child)?;
+    wait_log(log, offset, "valuesApplied", &mut cleanup.child)?;
+    ensure!(
+        !fs::read_to_string(log)?[offset as usize..].contains("\"patching\""),
+        "An unrun literal waited for the compiler"
+    );
+    host.click(x, y)?;
+    host.snapshot(&["Count: 508", "Increment"], 10)?;
+    let offset = fs::metadata(log)?.len();
     fs::write(&cleanup.source, &cleanup.original)?;
-    host.snapshot(&["Count: 8", "Increment"], 120)?;
+    wait_log(log, offset, "valuesApplied", &mut cleanup.child)?;
     ensure!(
         &host.runtime["pid"] == pid,
         "An unrun literal restarted the application"
     );
     Ok(
-        json!({"kept":8,"saveToSnapshotMs":(observed - saved).as_secs_f64() * 1000.0,"unrunLiteral":"compiled"}),
+        json!({"kept":8,"saveToSnapshotMs":(observed - saved).as_secs_f64() * 1000.0,"unrunLiteral":"live"}),
     )
 }
 fn live_values(source: &str, path: &std::path::Path) -> Result<String> {
