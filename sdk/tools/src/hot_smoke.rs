@@ -43,6 +43,12 @@ pub struct Options {
     /// Send unsaved literal changes through the IDE channel before saved edits.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=100))]
     pub live_values_rounds: u32,
+    /// Require structural edits (a new binding above the remembered state and
+    /// new views in two composables) to hot-patch without losing the count.
+    /// Needs a counter fixture on a Cranpose with the development
+    /// `hot-reload` feature.
+    #[arg(long)]
+    pub structural_state: bool,
     /// Simulate ignored build output during each measured edit (fixture only).
     #[arg(long, default_value_t = 0, requires = "fixture")]
     pub background_noise_ms: u64,
@@ -681,8 +687,13 @@ pub fn run(mut options: Options) -> Result<()> {
         host.runtime["pid"] == pid,
         "Recovery restarted the application"
     );
+    let structural = if options.structural_state {
+        Some(structural_edit(&mut host, &cleanup, &pid)?)
+    } else {
+        None
+    };
     let shutdown_ms = stop_preview(&mut cleanup.child, &pids)?;
-    let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change",
+    let result = json!({"result":"passed","pid":pid,"frames":host.frames.load(Ordering::Relaxed),"state":8,"connection":"unchanged","recovery":"compiler error, invalid syntax, and state type change","structuralState":structural,
         "startupMs":startup_ms, "backgroundNoiseMs":options.background_noise_ms,
         "snapshotPollMs":200, "patches":timings, "liveValues":live_timings, "shutdownMs":shutdown_ms, "stoppedPids":pids, "idle":idle, "supportBuilds":support_builds, "cargoReportedBuildMs":cargo_build_ms, "startupPhases":startup_phases});
     drop(cleanup);
@@ -690,6 +701,49 @@ pub fn run(mut options: Options) -> Result<()> {
         lease.complete()?;
     }
     write_report(options.report, &result)
+}
+/// Structural edits around remembered state must hot-patch in place and keep
+/// the count: a binding above it, a view before the button inside the column's
+/// content, and a view in another composable. The fixture is then restored.
+fn structural_edit(host: &mut Host, cleanup: &Cleanup, pid: &Value) -> Result<Value> {
+    let edited = cleanup
+        .original
+        .replacen("    let count", "    let spacing = 8.0_f32;\n    let count", 1)
+        .replacen(
+            "        Button(",
+            "        Text(\"Structural edit\", Modifier::empty(), TextStyle::default());\n        Button(",
+            1,
+        )
+        .replacen(
+            "fn Label() {\n",
+            "fn Label() {\n    Text(\"Second view\", Modifier::empty(), TextStyle::default());\n",
+            1,
+        );
+    ensure!(
+        edited.matches("Structural edit").count() == 1 && edited.contains("Second view"),
+        "Fixture lacks structural patch points"
+    );
+    let previous_generation = host.runtime["generation"].as_u64().unwrap_or(0);
+    let saved = Instant::now();
+    fs::write(&cleanup.source, &edited)?;
+    host.snapshot_after(
+        &["Count: 8", "Structural edit", "Second view"],
+        120,
+        Some(previous_generation),
+    )?;
+    let observed = Instant::now();
+    ensure!(
+        &host.runtime["pid"] == pid,
+        "Structural edit restarted the application"
+    );
+    let previous_generation = host.runtime["generation"].as_u64().unwrap_or(0);
+    fs::write(&cleanup.source, &cleanup.original)?;
+    host.snapshot_after(&["Count: 8", "Increment"], 120, Some(previous_generation))?;
+    ensure!(
+        &host.runtime["pid"] == pid,
+        "Reverting a structural edit restarted the application"
+    );
+    Ok(json!({"kept":8,"saveToSnapshotMs":(observed - saved).as_secs_f64() * 1000.0}))
 }
 fn live_values(source: &str, path: &std::path::Path) -> Result<String> {
     use cranpose_plugin_authoring::{
