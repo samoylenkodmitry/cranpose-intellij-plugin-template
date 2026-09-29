@@ -1,4 +1,17 @@
-# Cranpose plugin template 0.8.0
+# Cranpose plugin template 0.8.1
+
+- Live values for literals that have not run yet apply immediately again. 0.8.0
+  compiled every value edit in a file that had such a literal, for example an
+  animation duration or a number in a click handler, so most edits waited for
+  the compiler.
+- Strings and characters get no glyph or popup; they are edited in place and
+  their edits still apply live. Numbers, booleans and colors keep their controls.
+- Plainer wording in the New Project card, the popup hint, project statuses and
+  messages.
+- The hot-smoke `--structural-state` step checks that an edit to a literal that
+  has not run applies without compiling.
+
+## Included since 0.8.0
 
 The first tagged release of the template and its Rust SDK. The SDK crates
 share the template version, and Cranpose Studio and Cranpose Build pin this

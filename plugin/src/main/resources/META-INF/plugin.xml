@@ -3,10 +3,9 @@
     <name>Cranpose Tool Window</name>
     <vendor url="https://github.com/samoylenkodmitry/cranpose">Cranpose</vendor>
     <description><![CDATA[
-        A tool window whose UI is written in Rust with Cranpose and drawn by the GPU, shaders included.
-        The UI runs in its own process, so it can never take the IDE down, and it talks to the IDE
-        through JSON messages: it follows the IDE theme and the focused editor, shows notifications
-        and opens files.
+        An example tool window whose UI is written in Rust with Cranpose. The UI runs in a
+        separate process and exchanges JSON messages with the IDE: it follows the IDE theme and
+        the focused editor, shows notifications and opens files.
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

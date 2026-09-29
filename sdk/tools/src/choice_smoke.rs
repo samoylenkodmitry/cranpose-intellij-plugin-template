@@ -234,7 +234,7 @@ fn dashboard(options: Options) -> Result<()> {
     host.send(Packet::message(
         "cranpose.project",
         &json!({
-            "status":"7 Cranpose targets · 1 workspace packages", "targets":targets,
+            "status":"7 applications in 1 package", "targets":targets,
             "selected":"/fixture/Cargo.toml::cranpose-showcase", "root":"/fixture"
         })
         .to_string(),

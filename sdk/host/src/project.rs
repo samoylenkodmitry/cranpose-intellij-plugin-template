@@ -257,7 +257,7 @@ impl Project {
         // erase the wizard's known target. Later manual refreshes work normally.
         self.metadata.lock().expect("metadata").take();
         *self.snapshot.lock().expect("snapshot") = Snapshot {
-            status: "Showcase ready · the first build downloads Rust dependencies".into(),
+            status: "Project created. The first build downloads the dependencies.".into(),
             root: root.to_string_lossy().into_owned(),
             selected: target.id.clone(),
             targets: vec![target],

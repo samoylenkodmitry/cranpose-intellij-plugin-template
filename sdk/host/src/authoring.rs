@@ -471,22 +471,11 @@ fn reusable_placed(
         return Ok(false);
     }
     let previews = |c: &Catalog| c.functions.iter().filter(|f| f.preview).count();
-    let expected =
-        previews(catalog) + (catalog.literals.len() + catalog.references.len()).min(1024);
+    let mut targets = glyph_targets(catalog).into_iter();
+    let expected = previews(catalog) + targets.len();
     if state.placed.len() != expected || previews(previous) != previews(catalog) {
         return Ok(false);
     }
-    let mut targets = catalog
-        .literals
-        .iter()
-        .map(|l| (l.id, l.range.end_utf16))
-        .chain(
-            catalog
-                .references
-                .iter()
-                .map(|r| (r.literal, r.range.end_utf16)),
-        )
-        .take(1024);
     for item in &state.placed {
         if !j.bool(&item.object, "isValid")? {
             return Ok(false);
@@ -515,7 +504,8 @@ fn place(
 }
 
 fn batch_placement(j: &mut J<'_>, editor: &O, catalog: &Catalog) -> Result<bool> {
-    let count = (catalog.literals.len() + catalog.references.len()).min(1024);
+    let targets = glyph_targets(catalog);
+    let count = targets.len();
     if count < 256 {
         return Ok(false);
     }
@@ -543,18 +533,36 @@ fn batch_placement(j: &mut J<'_>, editor: &O, catalog: &Catalog) -> Result<bool>
     for index in 0..j.int(&carets, "size")? {
         let caret = j.obj(&carets, "get", "(I)Ljava/lang/Object;", &[A::I(index)])?;
         let offset = j.int(&caret, "getOffset")? as usize;
-        if catalog
-            .literals
-            .iter()
-            .map(|l| l.range.end_utf16)
-            .chain(catalog.references.iter().map(|r| r.range.end_utf16))
-            .take(1024)
-            .any(|end| end == offset)
-        {
+        if targets.iter().any(|(_, end)| *end == offset) {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// Literals that get a glyph and a popup control: numbers, booleans and colors,
+/// and variables bound to them. Strings and characters are edited in place;
+/// their edits still apply live without a control.
+fn glyph_targets(catalog: &Catalog) -> Vec<(usize, usize)> {
+    let controlled = |id: usize| {
+        catalog.literals.get(id).is_some_and(|l| {
+            l.id == id && matches!(l.kind.as_str(), "int" | "float" | "bool" | "color")
+        })
+    };
+    catalog
+        .literals
+        .iter()
+        .filter(|l| controlled(l.id))
+        .map(|l| (l.id, l.range.end_utf16))
+        .chain(
+            catalog
+                .references
+                .iter()
+                .filter(|r| controlled(r.literal))
+                .map(|r| (r.literal, r.range.end_utf16)),
+        )
+        .take(1024)
+        .collect()
 }
 
 fn place_with_batch(
@@ -578,7 +586,7 @@ fn place_with_batch(
         let identity = Arc::new(std::sync::atomic::AtomicI64::new(0));
         let captured = identity.clone();
         let id = jvm::register(move |j, op, _args| match op {
-            "PreviewGutter.getTooltipText" => j.string(&format!("Preview {name} · Cranpose")),
+            "PreviewGutter.getTooltipText" => j.string(&format!("Preview {name}")),
             "PreviewGutter.getClickAction" => j.new(
                 "dev/cranpose/rust/PreviewClick",
                 "(J)V",
@@ -618,18 +626,7 @@ fn place_with_batch(
         "()Lcom/intellij/openapi/editor/InlayModel;",
         &[],
     )?;
-    let targets = catalog
-        .literals
-        .iter()
-        .map(|l| (l.id, l.range.end_utf16))
-        .chain(
-            catalog
-                .references
-                .iter()
-                .map(|r| (r.literal, r.range.end_utf16)),
-        )
-        .take(1024)
-        .collect::<Vec<_>>();
+    let targets = glyph_targets(catalog);
     let project = project.clone();
     let batch_model = model.clone();
     crate::inlays::execute(j, &batch_model, batch, move |j| {
@@ -1433,9 +1430,10 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             .iter()
             .map(|p| (p.object.clone(), p.literal))
             .collect::<Vec<_>>();
+        // Strings are edited in place: only the number and the color get glyphs.
         ensure!(
-            items.len() == 4,
-            "Expected one preview marker, two scalar glyphs and one grouped color glyph"
+            items.len() == 3 && items.iter().all(|(_, literal)| *literal != Some(0)),
+            "Expected one preview marker, one number glyph and one grouped color glyph, and none on the string"
         );
         let mut retired = Vec::new();
         for (object, literal) in items {
@@ -1607,7 +1605,7 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
             .filter(|p| p.literal.is_some())
             .count();
         ensure!(
-            reference_count == catalog.literals.len() + catalog.references.len(),
+            reference_count == glyph_targets(&catalog).len(),
             "Alias glyphs missing"
         );
         let stamp = j.long(&document, "getModificationStamp")?;

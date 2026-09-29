@@ -19,7 +19,7 @@ pub fn dispatch(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Res
         "ShowcaseBuilder.getWeight" => j.boxed_int(85),
         "ShowcaseBuilder.isAvailable" => j.boxed_bool(true),
         "ShowcaseGenerator.getDescription" | "ShowcaseBuilder.getDescription" => {
-            j.string("Native Rust UI · Showcase with liquid glass and GPU shaders")
+            j.string("A Rust application based on the Cranpose Showcase sample")
         }
         "ShowcaseGenerator.getLogo" | "ShowcaseBuilder.getNodeIcon" => crate::editor::icon(j),
         "ShowcaseGenerator.validate" => {

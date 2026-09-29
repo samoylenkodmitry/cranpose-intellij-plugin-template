@@ -94,12 +94,22 @@ pub fn metadata(text: &str) -> Result<Snapshot> {
         }
     }
     let status = if targets.is_empty() {
-        "No runnable Cranpose targets found. Add a binary or example depending on cranpose.".into()
+        "No application found. Add a binary or example that depends on cranpose.".into()
     } else {
         format!(
-            "{} Cranpose targets · {} workspace packages",
+            "{} {} in {} {}",
             targets.len(),
-            packages.len()
+            if targets.len() == 1 {
+                "application"
+            } else {
+                "applications"
+            },
+            packages.len(),
+            if packages.len() == 1 {
+                "package"
+            } else {
+                "packages"
+            }
         )
     };
     Ok(Snapshot {

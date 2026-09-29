@@ -59,7 +59,10 @@ pub(crate) fn run(binary: &Path, log: &Path) -> Result<Value> {
             "ide.authoring.control",
             &json!({"literal":{"kind":"string","value":"Original value"}}).to_string(),
         ))?;
-        verify_text(&host, "Changes apply as you edit · Undo in the editor")?;
+        verify_text(
+            &host,
+            "Applied as you change it. Undo in the editor reverts it.",
+        )?;
         let cold_ready_ms = cold_started.elapsed().as_secs_f64() * 1000.0;
         // Typing applies each complete value into one Undo group.
         replace_text(&host, 100.0, FIELD_Y, "Pointer", select_all_modifier)?;
