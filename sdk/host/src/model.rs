@@ -221,7 +221,7 @@ pub fn starter_manifest(name: &str) -> Result<String> {
         "Use lowercase letters, digits, hyphens or underscores, starting with a letter."
     );
     Ok(format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ncranpose = {{ git = \"https://github.com/samoylenkodmitry/Cranpose\", rev = \"a49e7a781bfbab626f4ea3f6aadbdc2c1eb3e06b\", features = [\"desktop\", \"preview\"] }}\n"
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ncranpose = {{ git = \"https://github.com/samoylenkodmitry/Cranpose\", rev = \"283736c61e85486214ba0ef8b9ac813000b5055d\", features = [\"desktop\", \"preview\"] }}\n"
     ))
 }
 #[cfg(test)]
@@ -253,7 +253,7 @@ mod tests {
         assert!(
             starter_manifest("field-notes")
                 .expect("manifest")
-                .contains("a49e7a781bfbab626f4ea3f6aadbdc2c1eb3e06b")
+                .contains("283736c61e85486214ba0ef8b9ac813000b5055d")
         );
     }
     #[test]
