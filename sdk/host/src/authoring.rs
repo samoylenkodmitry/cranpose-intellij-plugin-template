@@ -975,7 +975,12 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
         && let Some((popup, panel)) = &state.popup
         && !j.bool(popup, "isDisposed")?
     {
-        j.bool(panel.primary.component(), "requestFocusInWindow")?;
+        let (popup, component) = (popup.clone(), panel.primary.component().clone());
+        drop(state);
+        crate::popup::activate(j, &popup, &component)?;
+        // The explicit glyph owns this click; ordinary source clicks above stay
+        // unconsumed for caret placement and selection.
+        j.void(event, "consume", "()V", &[])?;
         return Ok(());
     }
     state.hovered = literal;
@@ -1633,6 +1638,52 @@ pub fn integration_test(project: &Arc<Project>, j: &mut J<'_>) -> Result<()> {
         ensure!(
             j.same(&popup, &again.0)? && Arc::ptr_eq(&panel, &again.1),
             "Same hover recreated popup"
+        );
+        ensure!(
+            !j.bool(&popup, "shouldRequestFocus")?,
+            "Hover must not request keyboard focus"
+        );
+        let glyph_press = j.new(
+            "java/awt/event/MouseEvent",
+            "(Ljava/awt/Component;IJIIIIZI)V",
+            &[
+                A::O(&component),
+                A::I(501),
+                A::J(0),
+                A::I(0),
+                A::I(glyph_x),
+                A::I(glyph_y),
+                A::I(1),
+                A::Z(false),
+                A::I(1),
+            ],
+        )?;
+        let activated=j.new("com/intellij/openapi/editor/event/EditorMouseEvent","(Lcom/intellij/openapi/editor/Editor;Ljava/awt/event/MouseEvent;Lcom/intellij/openapi/editor/event/EditorMouseEventArea;)V",&[A::O(&editor),A::O(&glyph_press),A::O(&area)])?;
+        let listener = mouse_listener(project, j)?;
+        j.void(
+            &listener,
+            "mousePressed",
+            "(Lcom/intellij/openapi/editor/event/EditorMouseEvent;)V",
+            &[A::O(&activated)],
+        )?;
+        ensure!(
+            j.bool(&popup, "shouldRequestFocus")?,
+            "Explicit glyph press did not activate the hover popup"
+        );
+        ensure!(
+            j.bool(&activated, "isConsumed")?,
+            "Glyph press leaked back into the editor"
+        );
+        let active = project
+            .authoring
+            .lock()
+            .expect("authoring")
+            .popup
+            .clone()
+            .context("Activated popup disappeared")?;
+        ensure!(
+            j.same(&popup, &active.0)? && Arc::ptr_eq(&panel, &active.1),
+            "Activation replaced the popup or renderer"
         );
         let callback = panel
             .on_message
