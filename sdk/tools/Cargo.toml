@@ -15,7 +15,7 @@ zip = { version = "4", default-features = false, features = ["deflate"] }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 cranpose-ide-host = { package = "cranpose-plugin-host", path = "../host" }
-rand = "0.9"
+rand = "0.10"
 semver = "1"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "rustls-tls"] }
