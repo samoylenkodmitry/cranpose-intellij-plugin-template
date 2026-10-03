@@ -311,6 +311,9 @@ impl Workspace {
                         changed
                     };
                     if changed {
+                        if let Some(target) = checkpoint["settings"]["target"].as_str() {
+                            self.project.select(target);
+                        }
                         self.project.set_property(
                             j,
                             "cranpose.studio",
@@ -840,7 +843,7 @@ impl Workspace {
     }
 }
 
-/// A file tab owns a mounting point, while navigation can share a live workspace.
+/// Source tabs share one preview workspace and each owns a mounting point.
 /// Only the selected tab mounts its component; closing another tab cannot stop it.
 pub struct PreviewEditor {
     project: Arc<Project>,
@@ -853,7 +856,18 @@ pub struct PreviewEditor {
 }
 impl PreviewEditor {
     fn new(project: Arc<Project>, j: &mut J<'_>, file: O) -> Result<Arc<Self>> {
-        let workspace = Workspace::new(project.clone(), j, file.clone())?;
+        let existing = project
+            .preview_editors
+            .lock()
+            .expect("preview editors")
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .filter(|editor| !editor.closed.load(Ordering::Acquire))
+            .find_map(|editor| editor.workspace());
+        let workspace = match existing {
+            Some(workspace) => workspace,
+            None => Workspace::new(project.clone(), j, file.clone())?,
+        };
         let layout = j.new("java/awt/BorderLayout", "()V", &[])?;
         let component = j.new(
             "javax/swing/JPanel",
@@ -1353,6 +1367,26 @@ fn editor_navigation_test(
     let first = PreviewEditor::new(project.clone(), j, first_file)?;
     let second = PreviewEditor::new(project.clone(), j, second_file)?;
     let result = (|| -> Result<()> {
+        let shared = first.workspace().context("first preview")?;
+        ensure!(
+            Arc::ptr_eq(&shared, &second.workspace().context("second preview")?),
+            "Opening a source tab created another preview session"
+        );
+        shared.state.lock().expect("workspace").checkpoint =
+            json!({"settings":{"target":"desktop-app"}});
+        second.mount(j)?;
+        first.mount(j)?;
+        ensure!(
+            second
+                .workspace()
+                .context("shared preview")?
+                .state
+                .lock()
+                .expect("workspace")
+                .checkpoint["settings"]["target"]
+                == "desktop-app",
+            "Switching source tabs lost the selected target"
+        );
         first.bind(j, workspace.clone())?;
         workspace.follow_source(j, &second.path)?;
         ensure!(
