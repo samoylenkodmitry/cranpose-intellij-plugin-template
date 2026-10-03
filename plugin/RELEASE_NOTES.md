@@ -15,6 +15,10 @@
 These facilities are reusable template SDK components. Preview tracking and
 decoration rendering do not affect application release builds.
 
+`WorkspaceLease::artifacts_path()` provides separate build output for each
+concurrent lease and retains it across clean restarts. This moves the preview
+build isolation fix into the SDK for other plugin compilers to reuse.
+
 ## Included since 0.8.2
 
 - The preview controller reconnection test turns off automatic preview start,
