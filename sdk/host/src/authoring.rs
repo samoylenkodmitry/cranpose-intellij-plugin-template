@@ -835,12 +835,6 @@ fn ensure_panel(project: &Arc<Project>, j: &mut J<'_>) -> Result<Arc<Panel>> {
                 editor::attach_overlay(&p, j, panel, payload)?;
                 let overlay: Value = serde_json::from_str(payload)?;
                 if overlay["anchor"] == "window" {
-                    if let Some(surface) = overlay["surface"]
-                        .as_u64()
-                        .and_then(|id| panel.overlay_surface(id as u32))
-                    {
-                        crate::feedback::attach(&p, panel, &surface);
-                    }
                     return Ok(());
                 }
                 {

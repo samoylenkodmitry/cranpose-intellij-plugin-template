@@ -7,7 +7,10 @@ use cranpose_plugin_authoring::{Catalog, Function};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,6 +44,8 @@ impl Row {
 }
 
 struct Placed {
+    id: u64,
+    gpu: Arc<AtomicBool>,
     inlay: O,
     label: Arc<Mutex<String>>,
     _scope: jvm::Scope,
@@ -173,6 +178,8 @@ fn definition<'a>(
 fn place(j: &mut J<'_>, model: &O, offset: i32, text: String) -> Result<Option<Placed>> {
     let label = Arc::new(Mutex::new(text));
     let captured = label.clone();
+    let gpu = Arc::new(AtomicBool::new(false));
+    let gpu_paint = gpu.clone();
     let scope = jvm::Scope::default();
     let id = scope.register(move |j, op, args| match op {
         "CounterBadge.calcWidthInPixels" => {
@@ -190,7 +197,9 @@ fn place(j: &mut J<'_>, model: &O, offset: i32, text: String) -> Result<Option<P
             j.boxed_int(height)
         }
         "CounterBadge.paint" => {
-            glyphs::badge(j, args, &captured.lock().expect("counter label"), "muted")?;
+            if !gpu_paint.load(Ordering::Acquire) {
+                glyphs::badge(j, args, &captured.lock().expect("counter label"), "muted")?;
+            }
             j.null()
         }
         _ => j.null(),
@@ -198,7 +207,10 @@ fn place(j: &mut J<'_>, model: &O, offset: i32, text: String) -> Result<Option<P
     let renderer = j.new("dev/cranpose/rust/CounterBadge", "(J)V", &[A::J(id)])?;
     let inlay = j.obj(model, "addBlockElement", "(IZZILcom/intellij/openapi/editor/EditorCustomElementRenderer;)Lcom/intellij/openapi/editor/Inlay;",
         &[A::I(offset), A::Z(true), A::Z(true), A::I(0), A::O(&renderer)])?;
+    static NEXT: AtomicU64 = AtomicU64::new(1);
     Ok((!inlay.is_null()).then_some(Placed {
+        id: NEXT.fetch_add(1, Ordering::Relaxed),
+        gpu,
         inlay,
         label,
         _scope: scope,
@@ -211,6 +223,23 @@ pub(crate) struct Inlays {
 }
 
 impl Inlays {
+    pub(crate) fn anchors(&self) -> Vec<crate::decorations::Counter> {
+        self.editors
+            .iter()
+            .flat_map(|editor| {
+                editor
+                    .placed
+                    .values()
+                    .map(|placed| crate::decorations::Counter {
+                        id: placed.id,
+                        editor: editor.object.clone(),
+                        inlay: placed.inlay.clone(),
+                        label: placed.label.lock().expect("counter label").clone(),
+                        gpu: placed.gpu.clone(),
+                    })
+            })
+            .collect()
+    }
     pub fn clear(&mut self, j: &mut J<'_>) -> Result<()> {
         for editor in &mut self.editors {
             editor.clear(j)?;

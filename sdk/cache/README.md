@@ -76,6 +76,12 @@ An OS file lock provides exclusive access. Concurrent callers skip busy slots an
 receive different directories immediately. Acquiring a clean slot clears its old
 contents before returning it, while its path stays stable for compiler caches.
 
+Use `artifacts_path()` for compiler output that must survive clean restarts.
+It belongs to the same exclusive lease but sits outside the copied sources that
+`acquire` clears. Concurrent or abandoned slots keep separate artifacts, so a
+compiler that clears its own output cannot erase another active build. The caller
+creates the directory when needed and only accesses it while holding the lease.
+
 Call `complete(self)` only after every process using the directory has exited.
 Ordinary Drop leaves a busy marker. Failed or killed owners are never automatically
 reused, because descendants might still be alive after the owner's lock closes.

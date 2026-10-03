@@ -1,0 +1,52 @@
+name: GPU presentation probes
+on:
+  pull_request:
+    paths: ["Cargo.*", "sdk/gpu/**", "sdk/decorations/**", "sdk/authoring-ui/**", "sdk/host/**", "sdk/jvm-bridge/**", "sdk/tools/**", ".github/workflows/gpu-presentation.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gpu-presentation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Configure Microsoft C++ compiler
+        shell: pwsh
+        run: |
+          $installation = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
+          & "$installation/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          foreach ($name in @('Path', 'INCLUDE', 'LIB', 'LIBPATH', 'VCToolsInstallDir', 'WindowsSdkDir', 'WindowsSDKVersion')) {
+            "$name=$([Environment]::GetEnvironmentVariable($name))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe fetch-runtime --output target/probe-runtime
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --java-home "$env:CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/windows
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --direct --java-home "$env:CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/windows-direct
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --direct --effects --java-home "$env:CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/windows-effects
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gpu-presentation-windows
+          path: target/gpu-probe
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxtst-dev libxfixes-dev libxrender-dev libegl1-mesa-dev libgles2-mesa-dev libwayland-dev mesa-vulkan-drivers xvfb picom
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe fetch-runtime --output target/probe-runtime
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --java-home "$CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/linux --toolkit x11 --isolated
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --direct --java-home "$CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/linux-direct --toolkit x11 --isolated
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --direct --effects --java-home "$CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/linux-effects --toolkit x11 --isolated
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gpu-presentation-linux
+          path: target/gpu-probe

@@ -12,6 +12,7 @@ use cranpose_ui_graphics::{
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
 mod color;
+pub mod decorations;
 mod design;
 mod lightning;
 pub use design::{ActionChip, ArrivalAccent};
@@ -74,7 +75,6 @@ pub fn accent_effect(color: Color) -> RenderEffect {
 /// badges and underlines are painted by the IDE editor itself.
 #[composable]
 pub fn EditorDecorations() {
-    lightning::LiveEditLightning();
     let items = rememberMutableStateOf(Vec::<Value>::new);
     let colors = rememberColors();
     CollectEvents(

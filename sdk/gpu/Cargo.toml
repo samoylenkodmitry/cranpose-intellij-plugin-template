@@ -1,0 +1,43 @@
+[package]
+name = "cranpose-plugin-gpu"
+description = "Native GPU presentation in an existing AWT window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+probe = []
+
+[dependencies]
+anyhow = "1"
+jni = "0.21.1"
+jawt = { version = "0.2.1", default-features = false }
+libloading = "0.8"
+raw-window-handle = "0.6"
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl"] }
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["metal"] }
+objc2 = "0.6"
+objc2-quartz-core = { version = "0.3", features = ["CALayer", "CAMetalLayer", "CATransaction"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
+objc2-app-kit = { version = "0.3", features = ["NSView"] }
+objc2-core-graphics = { version = "0.3", features = ["CGColor"] }
+dispatch2 = "0.3"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["dx12"] }
+windows = { version = "0.62", features = ["Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Foundation"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+x11-dl = "2.21"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+[lints.clippy]
+unwrap_used = "deny"

@@ -88,6 +88,13 @@ impl WorkspaceLease {
     pub fn path(&self) -> &Path {
         &self.directory
     }
+    /// Build output owned exclusively by this lease, outside its copied sources.
+    /// The caller creates this directory when needed. Its contents survive clean
+    /// lease reuse, while concurrent and abandoned leases retain separate paths.
+    /// Only access it while holding the lease; stop all users before `complete`.
+    pub fn artifacts_path(&self) -> PathBuf {
+        self.slot.join("artifacts")
+    }
     /// Give a self-contained tool a stable executable path belonging to this lease.
     /// Cargo includes its workspace-wrapper path in artifact hashes: separate aliases
     /// let overlapping workspaces retain independent incremental outputs while sharing

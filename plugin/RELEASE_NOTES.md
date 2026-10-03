@@ -1,4 +1,25 @@
-# Cranpose plugin template 0.8.2
+# Cranpose plugin template 0.9.0
+
+- Shared native GPU presentation for animated editor counters and edit-to-preview
+  lightning: Metal on macOS, DirectComposition/DX12 on Windows, and Vulkan on
+  Linux X11 and JetBrains Runtime Wayland.
+- One renderer per IDE window follows scrolling, folding and display scaling.
+  Animations stop when settled, with no rendered frame copies through the CPU.
+  Unsupported graphics environments retain static editor counter text.
+- Preview recomposition counts link inspection data to composable definitions.
+  Overlapping Pick targets offer a chooser before source navigation.
+- Native probes cover transparency, input passthrough, text updates, movement,
+  lightning and idle behavior. Hardware checks passed on Apple M5, Windows
+  RTX 2070 and Linux Intel UHD 730, including Wayland at 125% scaling.
+
+These facilities are reusable template SDK components. Preview tracking and
+decoration rendering do not affect application release builds.
+
+`WorkspaceLease::artifacts_path()` provides separate build output for each
+concurrent lease and retains it across clean restarts. This moves the preview
+build isolation fix into the SDK for other plugin compilers to reuse.
+
+## Included since 0.8.2
 
 - The preview controller reconnection test turns off automatic preview start,
   so controllers that start a preview on their own, like Cranpose Studio
