@@ -407,6 +407,26 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
             ),
         ],
     );
+    add(
+        "CounterBadge",
+        "java/lang/Object",
+        &["com/intellij/openapi/editor/EditorCustomElementRenderer"],
+        true,
+        &[
+            (
+                "calcWidthInPixels",
+                "(Lcom/intellij/openapi/editor/Inlay;)I",
+            ),
+            (
+                "calcHeightInPixels",
+                "(Lcom/intellij/openapi/editor/Inlay;)I",
+            ),
+            (
+                "paint",
+                "(Lcom/intellij/openapi/editor/Inlay;Ljava/awt/Graphics;Ljava/awt/Rectangle;Lcom/intellij/openapi/editor/markup/TextAttributes;)V",
+            ),
+        ],
+    );
     for action in ["Refresh", "Check", "Run", "Preview", "Docs"] {
         add(
             &format!("{action}Action"),

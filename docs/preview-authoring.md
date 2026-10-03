@@ -25,3 +25,18 @@ IDE integration checks shared preview mounts, origin-tab disposal, final disposa
 non-consuming popup presses and callback cleanup. The native inspector fixture
 checks full-preview Pick separately from panel visibility and zero snapshot
 requests when both controls are off.
+
+## Live recomposition counters
+
+A Studio controller can send `studio.host` messages with `action: "recompositions"`,
+the active `session`, and a `rows` array. Each row contains an absolute `file`,
+composable `name`, one-based `line`, `recompositions`, and the number of live
+`instances`. The controller resolves private-build paths and sums instances of
+the same definition before sending the rows.
+
+The host places native block inlays above matching composable definitions in all
+open project editors. It updates labels in place and follows document offsets
+when source moves. An empty array clears the counters. The workspace rejects
+other sessions and clears its inlays when the preview stops, is replaced, loses
+its controller connection, or is disposed. The controller should poll while the
+preview runs so newly opened editors also receive counters.
