@@ -10,7 +10,7 @@ textures into the editor.
 Run the installed runtime probe:
 
 ```sh
-python3 sdk/tools/probes/shared_textures.py --ide /path/to/ide --output target/gpu-probe
+cargo run -p cranpose-template-tools -- gpu-probe metal --ide /path/to/ide --output target/gpu-probe
 ```
 
 The report distinguishes an unavailable service from a successful presentation
@@ -51,6 +51,41 @@ reported as successful GPU sharing.
 
 This probe validates the macOS interop primitive. It does not implement the
 production bridge, the Windows/Linux presenter, or the animated inlay migration.
+
+## Native surface probes
+
+The Rust tool generates JVM adapters and drives the native checks through the
+existing JNI host. Standalone native fixtures exercise DirectComposition on
+Windows and EGL on X11/Wayland. These fixtures do not yet render Cranpose content.
+
+```sh
+cargo run -p cranpose-template-tools -- gpu-probe fetch-runtime --output target/probe-runtime
+cargo run -p cranpose-template-tools -- gpu-probe native --java-home /path/to/jbr --output target/gpu-probe
+```
+
+Linux accepts `--toolkit x11 --isolated` for a private Xvfb/picom test display.
+`--toolkit wayland --isolated --weston-root /path/to/extracted-weston` runs a
+private nested compositor. The latter currently expects the Weston 15 package
+layout. Its screenshots come from the compositor: JBR's default Wayland Robot
+capture reads only the Java buffer and omits native subsurfaces. Input is injected
+through the isolated compositor's X11 backend, so it exercises Wayland hit testing.
+
+Initial results, before moving the orchestration into Rust:
+
+- Windows Server 2025/JBR `25.0.4.1+1-b623.69`: DirectComposition transparency,
+  translated placement, bounds, and native click-through passed on the CI runner.
+- X11/JBR `25.0.3+9-b508.16`: the same checks passed under Xvfb/picom with llvmpipe.
+  An ARGB child of the opaque AWT window lost alpha; an owned ARGB window works.
+  Production needs explicit owner visibility and stacking management.
+- Wayland/JBR `25.0.4.1+1-b623.69`: compositor captures passed alpha, placement and
+  bounds, and real clicks passed through the subsurface in nested Weston 15.
+  A separate headless Weston run rendered with Intel UHD 730 and passed the visual
+  checks; that display did not provide input validation.
+
+These are functional checks, not performance measurements. Native Wayland access
+uses checked JBR internal accessors and needs capability detection and version
+coverage before enabling it in the plugin. Popup occlusion, fractional scaling,
+scroll synchronization and disposal during rendering remain production gates.
 
 References:
 

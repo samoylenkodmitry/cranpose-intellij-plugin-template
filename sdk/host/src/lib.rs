@@ -4,6 +4,8 @@ mod editor;
 mod feedback;
 pub mod glyphs;
 #[cfg(feature = "ide-tests")]
+mod gpu_probe;
+#[cfg(feature = "ide-tests")]
 mod ide_tests;
 pub mod inlays;
 pub mod jobs;
@@ -70,6 +72,11 @@ pub extern "system" fn Java_dev_cranpose_rust_Native_call<'local>(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> anyhow::Result<jobject> {
             let operation: String = j.env.get_string(&operation)?.into();
+            #[cfg(feature = "ide-tests")]
+            if operation == "Probe.gpuMain" {
+                crate::gpu_probe::entry(&mut j)?;
+                return Ok(std::ptr::null_mut());
+            }
             if operation.starts_with("Probe.") {
                 return dispatch(&mut j.env, &operation, receiver, arguments)
                     .map(JObject::into_raw);

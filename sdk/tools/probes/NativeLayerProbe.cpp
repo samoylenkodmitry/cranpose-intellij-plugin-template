@@ -124,12 +124,14 @@ struct Layer {
 #include <X11/extensions/Xfixes.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/Xrender.h>
+#include <X11/extensions/XTest.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <wayland-client.h>
 #include <wayland-egl.h>
 #include <cstring>
 #include <cstdint>
+#include <cstdlib>
 
 struct Layer {
     Display* xdisplay = nullptr;
@@ -323,4 +325,30 @@ extern "C" JNIEXPORT void JNICALL Java_NativeLayerProbe_present(JNIEnv* env, jcl
 }
 extern "C" JNIEXPORT void JNICALL Java_NativeLayerProbe_destroy(JNIEnv*, jclass, jlong handle) {
     delete reinterpret_cast<Layer*>(handle);
+}
+extern "C" JNIEXPORT jboolean JNICALL Java_NativeLayerProbe_clickWayland(JNIEnv* env, jclass, jint x, jint y) {
+#ifdef _WIN32
+    return false;
+#else
+    const char* parentDisplay = std::getenv("CRANPOSE_PROBE_PARENT_DISPLAY");
+    if (!parentDisplay) return false;
+    Display* display = XOpenDisplay(parentDisplay);
+    if (!display) return false;
+    Window root, parent, *children = nullptr;
+    unsigned count = 0;
+    bool result = false;
+    if (XQueryTree(display, DefaultRootWindow(display), &root, &parent, &children, &count) && count == 1) {
+        int rootX, rootY;
+        Window child;
+        XTranslateCoordinates(display, children[0], root, x, y, &rootX, &rootY, &child);
+        XTestFakeMotionEvent(display, -1, rootX, rootY, CurrentTime);
+        XTestFakeButtonEvent(display, 1, True, CurrentTime);
+        XTestFakeButtonEvent(display, 1, False, CurrentTime);
+        XSync(display, False);
+        result = true;
+    }
+    if (children) XFree(children);
+    XCloseDisplay(display);
+    return result;
+#endif
 }

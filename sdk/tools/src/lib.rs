@@ -3,6 +3,7 @@ mod bridge;
 mod choice_smoke;
 mod control_smoke;
 mod framework;
+mod gpu_probe;
 mod hot_smoke;
 mod ide_test;
 mod inspection_profile;
@@ -23,6 +24,9 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Task {
+    /// Exercise native GPU presentation inside AWT using the Rust JNI harness.
+    #[command(subcommand)]
+    GpuProbe(gpu_probe::Task),
     /// Override the complete framework graph in a disposable compatibility checkout.
     UseFrameworkMain(framework::Options),
     FetchIde {
@@ -72,6 +76,7 @@ pub fn run_cli(config: BuildConfig) -> Result<()> {
         .set(config)
         .map_err(|_| anyhow::anyhow!("Build tools were already configured"))?;
     match Cli::parse().command {
+        Task::GpuProbe(task) => gpu_probe::run(task),
         Task::UseFrameworkMain(options) => framework::run(&root(), options),
         Task::FetchIde { product, version } => release::fetch_ide(&product, &version),
         Task::IdeTest { ide, profile } => ide_test::run(&ide, profile),
@@ -135,11 +140,26 @@ pub fn run(command: &mut Command) -> Result<()> {
     Ok(())
 }
 fn bridge_test(java: Option<PathBuf>, ide: Option<PathBuf>) -> Result<()> {
+    run(&mut probe_command(java, ide, false)?)
+}
+fn probe_command(java: Option<PathBuf>, ide: Option<PathBuf>, gpu: bool) -> Result<Command> {
     let root = root();
-    run(Command::new("cargo")
+    let mut build = Command::new("cargo");
+    build
         .args(["build", "-p", &config().host_package])
-        .current_dir(&root))?;
-    let lib = target_dir().join("bridge-test/lib");
+        .current_dir(&root);
+    if gpu {
+        build.args([
+            "--features",
+            &format!("{}/ide-tests", config().host_package),
+        ]);
+    }
+    run(&mut build)?;
+    let lib = target_dir().join(if gpu {
+        "gpu-bridge-test/lib"
+    } else {
+        "bridge-test/lib"
+    });
     fs::create_dir_all(&lib)?;
     let mut classes = if ide.is_some() {
         bridge::classes()
@@ -147,6 +167,33 @@ fn bridge_test(java: Option<PathBuf>, ide: Option<PathBuf>) -> Result<()> {
         vec![(BRIDGE.to_string(), cranpose_jvm_bridge::native_bridge(None))]
     };
     classes[0].1 = cranpose_jvm_bridge::native_bridge(None);
+    if gpu {
+        let mut callback = Class::new(
+            "dev/cranpose/rust/Callback",
+            "java/lang/Object",
+            &["java/lang/Runnable", "java/awt/event/ActionListener"],
+        );
+        callback.handle_constructor();
+        callback.forward("run", "()V");
+        callback.forward("actionPerformed", "(Ljava/awt/event/ActionEvent;)V");
+        classes.retain(|(name, _)| name != "dev/cranpose/rust/Callback");
+        classes.push(("dev/cranpose/rust/Callback".into(), callback.finish()));
+        let mut native = Class::new("NativeLayerProbe", "java/lang/Object", &[]);
+        for (name, signature) in [
+            ("create", "(Ljava/awt/Window;Z)J"),
+            ("backend", "(J)Ljava/lang/String;"),
+            ("present", "(JIIII)V"),
+            ("destroy", "(J)V"),
+            ("clickWayland", "(II)Z"),
+        ] {
+            native.native(name, signature);
+        }
+        classes.push(("NativeLayerProbe".into(), native.finish()));
+        let mut metal = Class::new("SharedTextureProbe", "java/lang/Object", &[]);
+        metal.native("create", "()J");
+        metal.native("release", "(J)V");
+        classes.push(("SharedTextureProbe".into(), metal.finish()));
+    }
     let name = "dev/cranpose/rust/Probe";
     let mut probe = Class::new(name, "java/lang/Object", &[]);
     probe.constructor("()V", "()V", &[], false);
@@ -157,7 +204,7 @@ fn bridge_test(java: Option<PathBuf>, ide: Option<PathBuf>) -> Result<()> {
         .map(|(name, _)| name.replace('/', "."))
         .collect::<Vec<_>>();
     probe.method(9, "main", "([Ljava/lang/String;)V", |c| {
-        c.text("Probe.main");
+        c.text(if gpu { "Probe.gpuMain" } else { "Probe.main" });
         c.null();
         c.null();
         c.invoke(0xb8, BRIDGE, "call", DISPATCH);
@@ -220,7 +267,8 @@ fn bridge_test(java: Option<PathBuf>, ide: Option<PathBuf>) -> Result<()> {
             }
         }
     }
-    run(Command::new(java.unwrap_or_else(|| PathBuf::from("java")))
+    let mut command = Command::new(java.unwrap_or_else(|| PathBuf::from("java")));
+    command
         .args([
             "--enable-native-access=ALL-UNNAMED",
             "-Xcheck:jni",
@@ -228,7 +276,6 @@ fn bridge_test(java: Option<PathBuf>, ide: Option<PathBuf>) -> Result<()> {
             "-cp",
         ])
         .arg(std::env::join_paths(classpath)?)
-        .arg("dev.cranpose.rust.Probe"))?;
-    println!("Verified {} generated bridge classes", names.len());
-    Ok(())
+        .arg("dev.cranpose.rust.Probe");
+    Ok(command)
 }

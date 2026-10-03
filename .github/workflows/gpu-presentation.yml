@@ -14,9 +14,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Configure Microsoft C++ compiler
         shell: pwsh
         run: |
@@ -25,8 +24,8 @@ jobs:
           foreach ($name in @('Path', 'INCLUDE', 'LIB', 'LIBPATH', 'VCToolsInstallDir', 'WindowsSdkDir', 'WindowsSDKVersion')) {
             "$name=$([Environment]::GetEnvironmentVariable($name))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           }
-      - run: python sdk/tools/probes/fetch_runtime.py --output target/probe-runtime
-      - run: python sdk/tools/probes/native_layer.py --java-home "$env:CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/windows
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe fetch-runtime --output target/probe-runtime
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --java-home "$env:CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/windows
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -37,12 +36,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxfixes-dev libxrender-dev libegl1-mesa-dev libgles2-mesa-dev libwayland-dev xvfb picom
-      - run: python sdk/tools/probes/fetch_runtime.py --output target/probe-runtime
-      - run: bash sdk/tools/probes/linux_session.sh target/gpu-probe/linux "$CRANPOSE_PROBE_JAVA_HOME"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxtst-dev libxfixes-dev libxrender-dev libegl1-mesa-dev libgles2-mesa-dev libwayland-dev xvfb picom
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe fetch-runtime --output target/probe-runtime
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --java-home "$CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/linux --toolkit x11 --isolated
       - uses: actions/upload-artifact@v7
         if: always()
         with:
