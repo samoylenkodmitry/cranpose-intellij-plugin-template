@@ -146,7 +146,6 @@ impl Layer {
                 &[JValue::Int(b.y.round() as i32)],
             )?
             .i()?;
-        self.sub.set_position(x, y);
         let surface = env
             .call_method(
                 self.peer.as_obj(),
@@ -162,6 +161,7 @@ impl Layer {
             pointer == self.parent_pointer,
             "AWT Wayland peer was replaced or disposed"
         );
+        self.sub.set_position(x, y);
         let mut dimensions = [0; 2];
         for (out, value) in dimensions.iter_mut().zip([b.width, b.height]) {
             *out = env

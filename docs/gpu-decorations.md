@@ -8,12 +8,14 @@ Recomposition counters and edit-to-preview lightning share a Cranpose compositio
 | --- | --- | --- |
 | macOS | Input-transparent NSView with CAMetalLayer | Metal |
 | Windows | DirectComposition visual on the existing AWT HWND | DX12 |
-| Linux X11 | Owned ARGB window with an empty input region | Vulkan or GLES; compositor required |
-| Linux Wayland | Input-transparent child wl_surface and subsurface | Vulkan or GLES; JetBrains Runtime WLToolkit |
+| Linux X11 | Owned ARGB window with an empty input region | Vulkan; compositor required |
+| Linux Wayland | Input-transparent child wl_surface and subsurface | Vulkan; JetBrains Runtime WLToolkit |
 
 The Wayland bridge checks the runtime accessors before using their handles. It borrows the existing display without disconnecting it, owns its child surface, and uses wp_viewporter when available to map physical buffer pixels into the parent's surface units. Incompatible runtimes, missing compositors and device failures retain static IntelliJ counter text and log the specific backend failure. They do not start an animated CPU-image fallback.
 
 The Metal view is created from the render worker and dispatched to AppKit. This leaves the AWT event thread available for accessibility callbacks. The view and native surface stay retained until the swap chain is released. Native layers have no input region/hit target.
+
+Presentation prefers Mailbox when the adapter supports it, with FIFO as the fallback. The worker supplies the 60 Hz frame limit. This avoids FIFO blocking subsequent frames on JBR's shared Wayland connection.
 
 ## Work and lifetime
 

@@ -31,7 +31,7 @@ wgpu = { version = "30", default-features = false, features = ["dx12"] }
 windows = { version = "0.62", features = ["Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Foundation"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-wgpu = { version = "30", default-features = false, features = ["vulkan", "gles"] }
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 x11-dl = "2.21"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client"] }

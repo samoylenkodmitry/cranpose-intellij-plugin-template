@@ -337,10 +337,20 @@ extern "C" JNIEXPORT jboolean JNICALL Java_NativeLayerProbe_clickWayland(JNIEnv*
     Window root, parent, *children = nullptr;
     unsigned count = 0;
     bool result = false;
-    if (XQueryTree(display, DefaultRootWindow(display), &root, &parent, &children, &count) && count == 1) {
+    Window compositor = None;
+    if (XQueryTree(display, DefaultRootWindow(display), &root, &parent, &children, &count)) {
+        for (unsigned i = 0; i < count; ++i) {
+            XWindowAttributes attributes{};
+            if (XGetWindowAttributes(display, children[i], &attributes) && attributes.map_state == IsViewable) {
+                if (compositor != None) { compositor = None; break; }
+                compositor = children[i];
+            }
+        }
+    }
+    if (compositor != None) {
         int rootX, rootY;
         Window child;
-        XTranslateCoordinates(display, children[0], root, x, y, &rootX, &rootY, &child);
+        XTranslateCoordinates(display, compositor, root, x, y, &rootX, &rootY, &child);
         XTestFakeMotionEvent(display, -1, rootX, rootY, CurrentTime);
         XTestFakeButtonEvent(display, 1, True, CurrentTime);
         XTestFakeButtonEvent(display, 1, False, CurrentTime);

@@ -212,7 +212,11 @@ impl Presentation {
     }
     /// Chooses a native GPU backend with premultiplied transparency.
     pub fn new(target: Target) -> Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // Only native modern backends: probing GL also creates an unrelated
+        // X11 connection/window in a Wayland JVM and is not needed here.
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::PRIMARY;
+        let instance = wgpu::Instance::new(descriptor);
         let surface = {
             let mut inner = target
                 .0
@@ -228,6 +232,12 @@ impl Presentation {
             ..Default::default()
         }))?;
         let caps = surface.get_capabilities(&adapter);
+        #[cfg(feature = "probe")]
+        eprintln!(
+            "Native GPU {:?}; present modes {:?}",
+            adapter.get_info(),
+            caps.present_modes
+        );
         let format = caps
             .formats
             .iter()
@@ -272,7 +282,11 @@ impl Presentation {
             format,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+                wgpu::PresentMode::Mailbox
+            } else {
+                wgpu::PresentMode::Fifo
+            },
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],

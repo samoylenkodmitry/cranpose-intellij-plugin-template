@@ -459,12 +459,31 @@ fn capture(j: &mut J<'_>, frame: &O, captures: &Option<PathBuf>) -> Result<O> {
     let [x, y] = origin(j, frame)?;
     if let Some(captures) = captures {
         let image = compositor_capture(j, captures)?;
-        return j.obj(
+        let x = wayland_units(j, frame, x)?;
+        let y = wayland_units(j, frame, y)?;
+        let width = wayland_units(j, frame, 400)?;
+        let height = wayland_units(j, frame, 240)?;
+        let crop = j.obj(
             &image,
             "getSubimage",
             "(IIII)Ljava/awt/image/BufferedImage;",
-            &[A::I(x), A::I(y), A::I(400), A::I(240)],
+            &[A::I(x), A::I(y), A::I(width), A::I(height)],
+        )?;
+        let logical = j.new(
+            "java/awt/image/BufferedImage",
+            "(III)V",
+            &[A::I(400), A::I(240), A::I(2)],
+        )?;
+        let graphics = j.obj(&logical, "createGraphics", "()Ljava/awt/Graphics2D;", &[])?;
+        let result = j.call(
+            &graphics,
+            "drawImage",
+            "(Ljava/awt/Image;IIIILjava/awt/image/ImageObserver;)Z",
+            &[A::O(&crop), A::I(0), A::I(0), A::I(400), A::I(240), A::Null],
         );
+        j.void(&graphics, "dispose", "()V", &[])?;
+        result?;
+        return Ok(logical);
     }
     let robot = j.new("java/awt/Robot", "()V", &[])?;
     let rect = j.new(
@@ -857,15 +876,34 @@ fn origin(j: &mut J<'_>, frame: &O) -> Result<[i32; 2]> {
     Ok([j.field_int(&point, "x")?, j.field_int(&point, "y")?])
 }
 
+// Isolated Weston uses one physical pixel per surface unit. Convert JBR's
+// logical coordinates before injecting X input or inspecting compositor pixels.
+fn wayland_units(j: &mut J<'_>, frame: &O, value: i32) -> Result<i32> {
+    let peer = j
+        .env
+        .get_field(frame.as_obj(), "peer", "Ljava/awt/peer/ComponentPeer;")?
+        .l()?;
+    Ok(j.env
+        .call_method(
+            peer,
+            "javaUnitsToSurfaceUnits",
+            "(I)I",
+            &[jni::objects::JValue::Int(value)],
+        )?
+        .i()?)
+}
+
 fn click(j: &mut J<'_>, frame: &O, robot: &O, wayland: bool, clicks: &AtomicUsize) -> Result<bool> {
     let [x, y] = origin(j, frame)?;
     if wayland {
+        let x = wayland_units(j, frame, x + 160)?;
+        let y = wayland_units(j, frame, y + 144)?;
         if !j
             .static_call(
                 "NativeLayerProbe",
                 "clickWayland",
                 "(II)Z",
-                &[A::I(x + 160), A::I(y + 144)],
+                &[A::I(x), A::I(y)],
             )?
             .z()?
         {
@@ -903,7 +941,9 @@ fn await_pixel(
         let [ox, oy] = origin(j, frame)?;
         let pixel = if let Some(captures) = captures {
             let image = compositor_capture(j, captures)?;
-            j.call(&image, "getRGB", "(II)I", &[A::I(ox + x), A::I(oy + y)])?
+            let x = wayland_units(j, frame, ox + x)?;
+            let y = wayland_units(j, frame, oy + y)?;
+            j.call(&image, "getRGB", "(II)I", &[A::I(x), A::I(y)])?
                 .i()?
         } else {
             let color = j.obj(
