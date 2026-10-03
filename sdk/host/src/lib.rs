@@ -13,6 +13,7 @@ mod popup;
 pub mod process;
 mod project;
 pub mod protocol;
+mod recompositions;
 mod router;
 mod run_configuration;
 pub mod session;

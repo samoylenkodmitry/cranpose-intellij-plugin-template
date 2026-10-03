@@ -51,6 +51,7 @@ pub fn dispatch(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Res
             | "Workspace"
             | "PreviewEditor"
             | "Badge"
+            | "CounterBadge"
             | "RunSettings"
             | "ValueGlyph"
             | "PreviewGutter"

@@ -93,6 +93,20 @@ pub fn metadata(text: &str) -> Result<Snapshot> {
             });
         }
     }
+    // Cargo lists targets alphabetically, which can put an iOS entry point
+    // before the desktop application. Honor the package's launch target first.
+    targets.sort_by_key(|target| {
+        let default_run = packages
+            .iter()
+            .find(|p| p["manifest_path"] == target.manifest)
+            .and_then(|p| p["default_run"].as_str());
+        (
+            target.kind != "bin",
+            default_run != Some(target.name.as_str()),
+            target.name != target.package_name,
+            !Path::new(&target.source).ends_with("src/main.rs"),
+        )
+    });
     let status = if targets.is_empty() {
         "No application found. Add a binary or example that depends on cranpose.".into()
     } else {
@@ -237,6 +251,24 @@ pub fn starter_manifest(name: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_binary_precedes_mobile_entries_and_examples() {
+        let package = json!({"id":"app","name":"desktop-app","default_run":"desktop-app","manifest_path":"/app/Cargo.toml","dependencies":[{"name":"cranpose"}],"targets":[
+            {"name":"cranpose-ios","kind":["bin"],"crate_types":["bin"],"src_path":"/app/src/ios.rs","required-features":["ios"]},
+            {"name":"desktop-app","kind":["bin"],"crate_types":["bin"],"src_path":"/app/src/main.rs","required-features":["desktop"]},
+            {"name":"demo","kind":["example"],"crate_types":["bin"],"src_path":"/app/examples/demo.rs"}
+        ]});
+        let metadata =
+            json!({"workspace_root":"/app","workspace_members":["app"],"packages":[package]});
+        let snapshot = super::metadata(&metadata.to_string()).expect("metadata");
+        assert_eq!(snapshot.targets[0].name, "desktop-app");
+        assert_eq!(snapshot.selected, snapshot.targets[0].id);
+        assert_eq!(
+            snapshot.targets.len(),
+            3,
+            "Explicit targets remain available"
+        );
+    }
     #[test]
     fn cargo_discovery_supports_fresh_install_and_custom_home_without_path() {
         let temp = tempfile::tempdir().expect("temp");

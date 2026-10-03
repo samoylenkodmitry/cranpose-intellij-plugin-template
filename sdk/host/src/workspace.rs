@@ -27,6 +27,7 @@ pub struct Workspace {
     viewport: O,
     scope: Scope,
     state: Mutex<State>,
+    counters: Mutex<crate::recompositions::Inlays>,
     closed: AtomicBool,
 }
 struct State {
@@ -90,6 +91,7 @@ impl Workspace {
             component: OnceLock::new(),
             viewport,
             scope: Scope::default(),
+            counters: Mutex::default(),
             state: Mutex::new(State {
                 ready: false,
                 pending: vec![],
@@ -162,6 +164,7 @@ impl Workspace {
                         workspace.connected(j)?;
                     } else {
                         workspace.state.lock().expect("workspace").ready = false;
+                        workspace.counters.lock().expect("counters").clear(j)?;
                         j.void(&workspace.viewport, "setVisible", "(Z)V", &[A::Z(false)])?;
                     }
                 }
@@ -244,6 +247,7 @@ impl Workspace {
         match request["action"].as_str().unwrap_or_default() {
             "start" => self.start(j, &request)?,
             "stop" => {
+                self.counters.lock().expect("counters").clear(j)?;
                 let (candidate, active) = {
                     let mut state = self.state.lock().expect("workspace");
                     (state.candidate.take(), state.active.take())
@@ -256,6 +260,25 @@ impl Workspace {
             "layout" => {
                 self.state.lock().expect("workspace").placement = request;
                 self.layout(j)?;
+            }
+            "recompositions" => {
+                let active = self
+                    .state
+                    .lock()
+                    .expect("workspace")
+                    .active
+                    .as_ref()
+                    .map(|child| child.0);
+                if active.is_some() && request["session"].as_i64() == active {
+                    let rows = serde_json::from_value::<Vec<crate::recompositions::Row>>(
+                        request["rows"].clone(),
+                    )?;
+                    self.counters.lock().expect("counters").update(
+                        j,
+                        &self.project.object,
+                        &rows,
+                    )?;
+                }
             }
             "menu" => self.menu(j, &request)?,
             "tooltip" => {
@@ -288,6 +311,9 @@ impl Workspace {
                         changed
                     };
                     if changed {
+                        if let Some(target) = checkpoint["settings"]["target"].as_str() {
+                            self.project.select(target);
+                        }
                         self.project.set_property(
                             j,
                             "cranpose.studio",
@@ -414,6 +440,7 @@ impl Workspace {
                     if !current {
                         return panel.close(j);
                     }
+                    workspace.counters.lock().expect("counters").clear(j)?;
                     if let Some((_, old)) = old {
                         workspace.close_child(j, &old)?;
                     }
@@ -439,6 +466,9 @@ impl Workspace {
                         }
                     };
                     if let Some((event, fallback)) = event {
+                        if fallback == 0 {
+                            workspace.counters.lock().expect("counters").clear(j)?;
+                        }
                         workspace.close_child(j, panel)?;
                         workspace.event(
                             id,
@@ -777,6 +807,7 @@ impl Workspace {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
+        self.counters.lock().expect("counters").clear(j)?;
         let children = {
             let mut state = self.state.lock().expect("workspace");
             state.pending.clear();
@@ -812,7 +843,7 @@ impl Workspace {
     }
 }
 
-/// A file tab owns a mounting point, while navigation can share a live workspace.
+/// Source tabs share one preview workspace and each owns a mounting point.
 /// Only the selected tab mounts its component; closing another tab cannot stop it.
 pub struct PreviewEditor {
     project: Arc<Project>,
@@ -825,7 +856,18 @@ pub struct PreviewEditor {
 }
 impl PreviewEditor {
     fn new(project: Arc<Project>, j: &mut J<'_>, file: O) -> Result<Arc<Self>> {
-        let workspace = Workspace::new(project.clone(), j, file.clone())?;
+        let existing = project
+            .preview_editors
+            .lock()
+            .expect("preview editors")
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .filter(|editor| !editor.closed.load(Ordering::Acquire))
+            .find_map(|editor| editor.workspace());
+        let workspace = match existing {
+            Some(workspace) => workspace,
+            None => Workspace::new(project.clone(), j, file.clone())?,
+        };
         let layout = j.new("java/awt/BorderLayout", "()V", &[])?;
         let component = j.new(
             "javax/swing/JPanel",
@@ -1325,6 +1367,26 @@ fn editor_navigation_test(
     let first = PreviewEditor::new(project.clone(), j, first_file)?;
     let second = PreviewEditor::new(project.clone(), j, second_file)?;
     let result = (|| -> Result<()> {
+        let shared = first.workspace().context("first preview")?;
+        ensure!(
+            Arc::ptr_eq(&shared, &second.workspace().context("second preview")?),
+            "Opening a source tab created another preview session"
+        );
+        shared.state.lock().expect("workspace").checkpoint =
+            json!({"settings":{"target":"desktop-app"}});
+        second.mount(j)?;
+        first.mount(j)?;
+        ensure!(
+            second
+                .workspace()
+                .context("shared preview")?
+                .state
+                .lock()
+                .expect("workspace")
+                .checkpoint["settings"]["target"]
+                == "desktop-app",
+            "Switching source tabs lost the selected target"
+        );
         first.bind(j, workspace.clone())?;
         workspace.follow_source(j, &second.path)?;
         ensure!(

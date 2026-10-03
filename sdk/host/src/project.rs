@@ -353,7 +353,14 @@ impl Project {
             return Ok(());
         };
         if task == "preview" {
-            crate::workspace::show(self, j, &target.source, None, Some(&target))?;
+            let source = self
+                .selected(j)?
+                .0
+                .map(|file| j.text(&file, "getPath"))
+                .transpose()?
+                .filter(|path| model::is_cranpose_source(Path::new(path)))
+                .unwrap_or_else(|| target.source.clone());
+            crate::workspace::show(self, j, &source, None, Some(&target))?;
             return Ok(());
         }
         if self.snapshot.lock().expect("snapshot").busy {

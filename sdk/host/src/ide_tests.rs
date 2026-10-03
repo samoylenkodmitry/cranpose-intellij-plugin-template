@@ -47,6 +47,10 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                 ("native Studio menus", crate::popup::list_test),
                 ("preview UI reconnection", reconnect),
                 ("inline stability badges", inlays),
+                (
+                    "live recomposition code counters",
+                    crate::recompositions::integration_test,
+                ),
                 ("Cranpose authoring markers and wizard", authoring),
                 (
                     "edit-to-preview overlay coordinates",
