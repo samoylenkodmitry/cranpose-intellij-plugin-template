@@ -2,6 +2,10 @@
 
 Recomposition counters and edit-to-preview lightning share a Cranpose composition in each IDE window. IntelliJ block inlays reserve space above source definitions and retain the source anchors. Cranpose draws the visible counter text and shaders.
 
+The template owns the AWT/JNI presentation bridge, editor geometry, decoration composition and native probes. Other IntelliJ plugins can use the same SDK crates without depending on Cranpose Studio. Framework recomposition tracking belongs to Cranpose; the SDK consumes its inspection data and existing rendering APIs.
+
+Counter data requires Cranpose 0.9.2 or a framework revision containing preview recomposition tracking. The application's own framework version controls that capability; the plugin's rendering dependencies do not upgrade the application.
+
 ## Presentation
 
 | Desktop | Native presentation | GPU backend |

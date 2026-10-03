@@ -80,6 +80,8 @@ crates from this repository. There is no dependency back on Studio.
 | `sdk/process` | [Owned process trees, bounded shutdown and cancellation](sdk/process/README.md) |
 | `sdk/watch` | Bounded, deduplicated file-change batches with quiet and maximum deadlines |
 | `sdk/authoring`, `sdk/authoring-ui` | [Live literals, editor shaders, Cranpose controls and Showcase project wizard](docs/authoring.md) |
+| `sdk/gpu` | [Transparent native GPU presentation in existing AWT windows](docs/gpu-decorations.md) |
+| `sdk/decorations` | Shared Cranpose renderer for counters and lightning, with bounded animations and no idle frames |
 
 The template disables Cargo project and stability features; applications opt in
 through `HostFeatures`. Plugin identity and checkout paths are explicit in each
