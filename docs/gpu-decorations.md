@@ -4,7 +4,7 @@ Recomposition counters and edit-to-preview lightning share a Cranpose compositio
 
 The template owns the AWT/JNI presentation bridge, editor geometry, decoration composition and native probes. Other IntelliJ plugins can use the same SDK crates without depending on Cranpose Studio. Framework recomposition tracking belongs to Cranpose; the SDK consumes its inspection data and existing rendering APIs.
 
-Counter data requires Cranpose 0.9.2 or a framework revision containing preview recomposition tracking. The application's own framework version controls that capability; the plugin's rendering dependencies do not upgrade the application.
+Counter data requires Cranpose 0.9.3 or a framework revision containing preview recomposition tracking. The application's own framework version controls that capability; the plugin's rendering dependencies do not upgrade the application.
 
 ## Presentation
 
