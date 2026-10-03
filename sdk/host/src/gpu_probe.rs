@@ -148,6 +148,13 @@ fn run(j: &mut J<'_>) -> Result<()> {
     let toolkit = j.text(&class, "getName")?;
     println!("toolkit={toolkit}");
     let wayland = toolkit.contains("WLToolkit");
+    if let Ok(expected) = std::env::var("CRANPOSE_PROBE_TOOLKIT") {
+        ensure!(
+            (expected == "wayland" && wayland)
+                || (expected == "x11" && toolkit.contains("XToolkit")),
+            "Requested {expected} toolkit, but the runtime selected {toolkit}"
+        );
+    }
     let gc = j.obj(
         &frame,
         "getGraphicsConfiguration",

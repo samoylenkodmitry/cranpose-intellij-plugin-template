@@ -140,9 +140,14 @@ pub fn run(command: &mut Command) -> Result<()> {
     Ok(())
 }
 fn bridge_test(java: Option<PathBuf>, ide: Option<PathBuf>) -> Result<()> {
-    run(&mut probe_command(java, ide, false)?)
+    run(&mut probe_command(java, ide, false, &[])?)
 }
-fn probe_command(java: Option<PathBuf>, ide: Option<PathBuf>, gpu: bool) -> Result<Command> {
+fn probe_command(
+    java: Option<PathBuf>,
+    ide: Option<PathBuf>,
+    gpu: bool,
+    vm_options: &[&str],
+) -> Result<Command> {
     let root = root();
     let mut build = Command::new("cargo");
     build
@@ -269,6 +274,7 @@ fn probe_command(java: Option<PathBuf>, ide: Option<PathBuf>, gpu: bool) -> Resu
     }
     let mut command = Command::new(java.unwrap_or_else(|| PathBuf::from("java")));
     command
+        .args(vm_options)
         .args([
             "--enable-native-access=ALL-UNNAMED",
             "-Xcheck:jni",

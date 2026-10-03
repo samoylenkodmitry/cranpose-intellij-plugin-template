@@ -85,7 +85,7 @@ fn metal(ide: &Path, output: &Path) -> Result<()> {
             .arg("-o")
             .arg(&library),
     )?;
-    let mut command = crate::probe_command(Some(java_home.join("bin/java")), Some(ide), true)?;
+    let mut command = crate::probe_command(Some(java_home.join("bin/java")), Some(ide), true, &[])?;
     command
         .env("CRANPOSE_PROBE_LIBRARY", library)
         .env("CRANPOSE_PROBE_KIND", "metal");
@@ -227,8 +227,8 @@ fn native(
     weston_root: Option<&Path>,
 ) -> Result<()> {
     fs::create_dir_all(output)?;
-    let output = output.canonicalize()?;
-    let java_home = java_home.canonicalize()?;
+    let output = compiler_path(output)?;
+    let java_home = compiler_path(java_home)?;
     let source = crate::root().join("sdk/tools/probes/NativeLayerProbe.cpp");
     let library = output.join(format!(
         "{}native_layer_probe{}",
@@ -296,22 +296,22 @@ fn native(
                 .arg(&library),
         )?;
     }
-    let mut command = crate::probe_command(Some(java_home.join("bin").join(java())), None, true)?;
+    let vm_options = match toolkit {
+        Some("wayland") => vec!["-Dawt.toolkit.name=WLToolkit"],
+        Some("x11") => vec!["-Dawt.toolkit.name=XToolkit"],
+        _ => Vec::new(),
+    };
+    let mut command = crate::probe_command(
+        Some(java_home.join("bin").join(java())),
+        None,
+        true,
+        &vm_options,
+    )?;
     command
         .env("CRANPOSE_PROBE_LIBRARY", &library)
         .env("CRANPOSE_PROBE_OUTPUT", &output);
     if let Some(toolkit) = toolkit {
-        command.env(
-            "JAVA_TOOL_OPTIONS",
-            format!(
-                "-Dawt.toolkit.name={}",
-                if toolkit == "wayland" {
-                    "WLToolkit"
-                } else {
-                    "XToolkit"
-                }
-            ),
-        );
+        command.env("CRANPOSE_PROBE_TOOLKIT", toolkit);
     }
     let mut children = Vec::new();
     if isolated {
@@ -387,6 +387,21 @@ fn native(
         drop(child);
     }
     result
+}
+
+// MSVC and the Java launcher do not consistently accept Win32 verbatim paths.
+fn compiler_path(path: &Path) -> Result<PathBuf> {
+    let path = path.canonicalize()?;
+    #[cfg(windows)]
+    {
+        let path = path.to_string_lossy();
+        if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+            return Ok(PathBuf::from(format!(r"\\{unc}")));
+        }
+        return Ok(PathBuf::from(path.strip_prefix(r"\\?\").unwrap_or(&path)));
+    }
+    #[cfg(not(windows))]
+    Ok(path)
 }
 
 fn execute(
