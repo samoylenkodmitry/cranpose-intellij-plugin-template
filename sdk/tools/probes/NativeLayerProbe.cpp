@@ -133,6 +133,7 @@ struct Layer {
 
 struct Layer {
     Display* xdisplay = nullptr;
+    Window xparent = 0;
     Window xwindow = 0;
     Colormap colormap = 0;
     wl_display* display = nullptr;
@@ -203,6 +204,7 @@ struct Layer {
             auto info = static_cast<JAWT_X11DrawingSurfaceInfo*>(drawing.platform());
             xdisplay = XOpenDisplay(DisplayString(info->display));
             if (!xdisplay) throw std::runtime_error("X11 display unavailable");
+            xparent = info->drawable;
             XVisualInfo pattern{};
             pattern.screen = DefaultScreen(xdisplay); pattern.depth = 32; pattern.c_class = TrueColor;
             int count = 0;
@@ -219,15 +221,17 @@ struct Layer {
             attributes.colormap = colormap;
             attributes.border_pixel = 0;
             attributes.background_pixel = 0;
-            xwindow = XCreateWindow(xdisplay, info->drawable, 0, 0, 1, 1, 0, 32, InputOutput, visual,
-                CWColormap | CWBorderPixel | CWBackPixel, &attributes);
+            attributes.override_redirect = True;
+            xwindow = XCreateWindow(xdisplay, DefaultRootWindow(xdisplay), 0, 0, 1, 1, 0, 32, InputOutput, visual,
+                CWColormap | CWBorderPixel | CWBackPixel | CWOverrideRedirect, &attributes);
+            XSetTransientForHint(xdisplay, xwindow, xparent);
             XserverRegion empty = XFixesCreateRegion(xdisplay, nullptr, 0);
             XFixesSetWindowShapeRegion(xdisplay, xwindow, ShapeInput, 0, 0, empty);
             XFixesDestroyRegion(xdisplay, empty);
             XMapWindow(xdisplay, xwindow);
             XSync(xdisplay, False);
             egl = eglGetDisplay(reinterpret_cast<EGLNativeDisplayType>(xdisplay));
-            name = "X11/EGL";
+            name = "X11 owned ARGB window/EGL";
         }
         EGLint major, minor;
         if (!eglInitialize(egl, &major, &minor)) throw std::runtime_error("EGL initialization failed");
@@ -254,7 +258,11 @@ struct Layer {
             wl_surface_commit(parent);
             wl_display_flush(display);
         } else {
-            XMoveResizeWindow(xdisplay, xwindow, x, y, w, h);
+            int rootX, rootY;
+            Window child;
+            XTranslateCoordinates(xdisplay, xparent, DefaultRootWindow(xdisplay), x, y, &rootX, &rootY, &child);
+            XMoveResizeWindow(xdisplay, xwindow, rootX, rootY, w, h);
+            XRaiseWindow(xdisplay, xwindow);
             XSync(xdisplay, False);
         }
         if (width != w || height != h) {
