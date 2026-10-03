@@ -1,14 +1,8 @@
 //! Finite edit-to-preview lightning, drawn entirely by Cranpose.
-use cranpose::{
-    Box as UiBox, BoxSpec, GraphicsLayer, Modifier, composable, rememberHostMessages,
-    rememberMutableStateOf,
-};
-use cranpose_animation::{Easing, animate_float_as_state_with_initial, tween};
-use cranpose_core::CollectEvents;
+use cranpose::{Box as UiBox, BoxSpec, GraphicsLayer, Modifier, composable};
 use cranpose_ui_graphics::{
     CompositingStrategy, RUNTIME_SHADER_PRELUDE_WGSL, RenderEffect, RuntimeShader,
 };
-use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
 const LIGHTNING: &str = r"
@@ -88,14 +82,16 @@ fn jagged(s:f32, seed:f32)->f32 {
     return vec4<f32>(rgb*alpha,alpha);
 }";
 
+/// Draws lightning at the host-supplied animation progress.
 #[composable]
-fn Bolt(from: [f32; 2], target: [f32; 4], size: [f32; 2], request: u64, pending: bool) {
-    let progress = animate_float_as_state_with_initial(
-        0.0,
-        1.0,
-        tween(if pending { 10_000 } else { 850 }, Easing::LinearEasing),
-        "live edit lightning",
-    );
+pub fn LightningFrame(
+    from: [f32; 2],
+    target: [f32; 4],
+    size: [f32; 2],
+    request: u64,
+    pending: bool,
+    progress: f32,
+) {
     static SOURCE: OnceLock<Arc<str>> = OnceLock::new();
     let mut shader = RuntimeShader::from_shared_source(
         SOURCE
@@ -106,7 +102,7 @@ fn Bolt(from: [f32; 2], target: [f32; 4], size: [f32; 2], request: u64, pending:
     shader.set_float4(4, target[0], target[1], target[2], target[3]);
     shader.set_float4(
         8,
-        progress.value(),
+        progress,
         (request % 1024) as f32,
         if pending { 1.0 } else { 0.0 },
         0.0,
@@ -123,60 +119,6 @@ fn Bolt(from: [f32; 2], target: [f32; 4], size: [f32; 2], request: u64, pending:
         BoxSpec::default(),
         || {},
     );
-}
-#[composable]
-pub(crate) fn LiveEditLightning() {
-    let state = rememberMutableStateOf(|| None::<(u64, [f32; 2], [f32; 4], [f32; 2], bool)>);
-    CollectEvents(
-        rememberHostMessages("ide.authoring.bolt"),
-        (),
-        move |payload: String| {
-            let Ok(value) = serde_json::from_str::<Value>(&payload) else {
-                return;
-            };
-            if value["clear"] == true {
-                state.set(None);
-                return;
-            }
-            let Some(request) = value["request"].as_u64() else {
-                return;
-            };
-            let numbers = |key: &str, n: usize| -> Option<Vec<f32>> {
-                let v = value[key].as_array()?;
-                if v.len() != n {
-                    return None;
-                }
-                v.iter()
-                    .map(|v| {
-                        v.as_f64()
-                            .filter(|f| f.is_finite() && f.abs() < 32768.0)
-                            .map(|f| f as f32)
-                    })
-                    .collect()
-            };
-            let (Some(from), Some(target)) = (numbers("from", 2), numbers("target", 4)) else {
-                return;
-            };
-            let Some(size) = numbers("size", 2) else {
-                return;
-            };
-            if target[2] <= 0.0 || target[3] <= 0.0 {
-                return;
-            }
-            state.set(Some((
-                request,
-                [from[0], from[1]],
-                [target[0], target[1], target[2], target[3]],
-                [size[0], size[1]],
-                value["phase"] == "pending",
-            )));
-        },
-    );
-    cranpose::embed::HostOverlay("window", move || {
-        if let Some((request, from, target, size, pending)) = state.get() {
-            cranpose::key(request, move || Bolt(from, target, size, request, pending));
-        }
-    });
 }
 #[cfg(test)]
 mod tests {

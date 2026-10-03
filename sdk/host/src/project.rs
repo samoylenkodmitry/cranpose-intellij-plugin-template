@@ -40,6 +40,7 @@ pub struct Project {
     pub editor: Mutex<crate::editor::State>,
     pub authoring: Mutex<crate::authoring::State>,
     pub feedback: Mutex<crate::feedback::State>,
+    pub decorations: Mutex<crate::decorations::State>,
     pub job: Mutex<Option<cranpose_plugin_process::Cancellation>>,
 }
 impl Project {
@@ -69,6 +70,7 @@ impl Project {
             editor: Mutex::new(crate::editor::State::default()),
             authoring: Mutex::new(crate::authoring::State::default()),
             feedback: Mutex::new(crate::feedback::State::default()),
+            decorations: Mutex::default(),
             job: Mutex::new(None),
         });
         registry.push(project.clone());
@@ -105,8 +107,10 @@ impl Project {
                         project.send_editor(j)?;
                         project.stability.lock().expect("stability").schedule();
                         crate::authoring::schedule(&project, j)?;
+                        crate::decorations::schedule(&project, j)?;
                     }
                     "Callback.lookAndFeelChanged" => {
+                        crate::decorations::schedule(&project, j)?;
                         let panels = project.live_panels();
                         for panel in panels {
                             project.theme(j, &panel)?;
@@ -193,6 +197,7 @@ impl Project {
             crate::stability::install(self, j, &multicaster)?;
         }
         crate::authoring::install(self, j, &multicaster)?;
+        crate::decorations::install(self, j)?;
         Ok(())
     }
     fn tick(self: &Arc<Self>, j: &mut J<'_>) -> Result<()> {
@@ -655,6 +660,7 @@ impl Project {
             j.void(timer, "stop", "()V", &[])?;
         }
         crate::stability::clear(self, j)?;
+        crate::decorations::dispose(self, j)?;
         crate::authoring::dispose(self, j)?;
         let workspaces = self
             .workspaces

@@ -56,13 +56,14 @@ pub fn entry(j: &mut J<'_>) -> Result<()> {
 }
 
 fn run(j: &mut J<'_>) -> Result<()> {
-    let library = std::env::var("CRANPOSE_PROBE_LIBRARY")?;
-    j.static_void(
-        "java/lang/System",
-        "load",
-        "(Ljava/lang/String;)V",
-        &[A::S(&library)],
-    )?;
+    if let Ok(library) = std::env::var("CRANPOSE_PROBE_LIBRARY") {
+        j.static_void(
+            "java/lang/System",
+            "load",
+            "(Ljava/lang/String;)V",
+            &[A::S(&library)],
+        )?;
+    }
     let runtime = j.static_obj(
         "java/lang/System",
         "getProperty",
@@ -103,6 +104,26 @@ fn run(j: &mut J<'_>) -> Result<()> {
             "javax/swing/JButton",
             "(Ljava/lang/String;)V",
             &[A::S("Input under the GPU layer")],
+        )?;
+        let reference = j.new("javax/swing/JPanel", "()V", &[])?;
+        let color = j.new("java/awt/Color", "(I)V", &[A::I(0x9fbfff)])?;
+        j.void(
+            &reference,
+            "setBackground",
+            "(Ljava/awt/Color;)V",
+            &[A::O(&color)],
+        )?;
+        j.void(
+            &reference,
+            "setBounds",
+            "(IIII)V",
+            &[A::I(320), A::I(32), A::I(48), A::I(32)],
+        )?;
+        j.obj(
+            &content,
+            "add",
+            "(Ljava/awt/Component;)Ljava/awt/Component;",
+            &[A::O(&reference)],
         )?;
         j.void(
             &button,
@@ -171,6 +192,20 @@ fn run(j: &mut J<'_>) -> Result<()> {
     println!("displayScale={scale}");
     let target = frame.clone();
     let layer = edt(j, move |j| {
+        if std::env::var("CRANPOSE_PROBE_KIND").as_deref() == Ok("direct") {
+            let target = cranpose_plugin_gpu::Target::new(
+                &mut j.env,
+                target.as_obj(),
+                cranpose_plugin_gpu::Bounds {
+                    x: 32.0,
+                    y: 32.0,
+                    width: 256,
+                    height: 32,
+                    scale,
+                },
+            )?;
+            return Ok(ProbeLayer::Direct(target));
+        }
         let handle = j
             .static_call(
                 "NativeLayerProbe",
@@ -187,17 +222,26 @@ fn run(j: &mut J<'_>) -> Result<()> {
             &[A::J(handle)],
         )?;
         println!("backend={}", j.read_string(&name)?);
-        Ok(handle)
+        Ok(ProbeLayer::Fixture(handle))
     });
     let result = match layer {
         Ok(layer) => {
-            let result = check(j, &frame, layer, scale, wayland, &clicks);
+            let result = check(j, &frame, &layer, scale, wayland, &clicks);
+            if result.is_err() && !wayland {
+                let _ = screenshot(j, &frame);
+                if std::env::var_os("CRANPOSE_PROBE_HOLD").is_some() {
+                    thread::sleep(Duration::from_secs(30));
+                }
+            }
             if j.env.exception_check()? {
                 j.env.exception_describe()?;
                 j.env.exception_clear()?;
             }
-            let disposal = edt(j, move |j| {
-                j.static_void("NativeLayerProbe", "destroy", "(J)V", &[A::J(layer)])
+            let disposal = edt(j, move |j| match &layer {
+                ProbeLayer::Fixture(handle) => {
+                    j.static_void("NativeLayerProbe", "destroy", "(J)V", &[A::J(*handle)])
+                }
+                ProbeLayer::Direct(target) => target.set_visible(false),
             });
             result.and(disposal)
         }
@@ -407,10 +451,103 @@ fn metal(j: &mut J<'_>) -> Result<()> {
     result
 }
 
+enum ProbeLayer {
+    Fixture(i64),
+    Direct(cranpose_plugin_gpu::Target),
+}
+fn capture(j: &mut J<'_>, frame: &O, captures: &Option<PathBuf>) -> Result<O> {
+    let [x, y] = origin(j, frame)?;
+    if let Some(captures) = captures {
+        let image = compositor_capture(j, captures)?;
+        return j.obj(
+            &image,
+            "getSubimage",
+            "(IIII)Ljava/awt/image/BufferedImage;",
+            &[A::I(x), A::I(y), A::I(400), A::I(240)],
+        );
+    }
+    let robot = j.new("java/awt/Robot", "()V", &[])?;
+    let rect = j.new(
+        "java/awt/Rectangle",
+        "(IIII)V",
+        &[A::I(x), A::I(y), A::I(400), A::I(240)],
+    )?;
+    j.obj(
+        &robot,
+        "createScreenCapture",
+        "(Ljava/awt/Rectangle;)Ljava/awt/image/BufferedImage;",
+        &[A::O(&rect)],
+    )
+}
+fn save_capture(j: &mut J<'_>, image: &O, name: &str) -> Result<()> {
+    let path = PathBuf::from(std::env::var("CRANPOSE_PROBE_OUTPUT")?).join(name);
+    let file = j.new(
+        "java/io/File",
+        "(Ljava/lang/String;)V",
+        &[A::S(&path.to_string_lossy())],
+    )?;
+    ensure!(
+        j.static_call(
+            "javax/imageio/ImageIO",
+            "write",
+            "(Ljava/awt/image/RenderedImage;Ljava/lang/String;Ljava/io/File;)Z",
+            &[A::O(image), A::S("png"), A::O(&file)]
+        )?
+        .z()?,
+        "PNG encoder unavailable"
+    );
+    Ok(())
+}
+fn screenshot(j: &mut J<'_>, frame: &O) -> Result<()> {
+    let image = capture(j, frame, &None)?;
+    save_capture(j, &image, "failure.png")
+}
+fn pixels(j: &mut J<'_>, image: &O, rect: [i32; 4]) -> Result<Vec<i32>> {
+    let [x, y, w, h] = rect;
+    let array = j.obj(
+        image,
+        "getRGB",
+        "(IIII[III)[I",
+        &[
+            A::I(x),
+            A::I(y),
+            A::I(w),
+            A::I(h),
+            A::Null,
+            A::I(0),
+            A::I(w),
+        ],
+    )?;
+    let local = j.env.new_local_ref(&array)?;
+    let array = jni::objects::JIntArray::from(local);
+    let mut pixels = vec![0; (w * h) as usize];
+    j.env.get_int_array_region(&array, 0, &mut pixels)?;
+    j.env.delete_local_ref(array)?;
+    Ok(pixels)
+}
+fn rgb(pixel: i32) -> [i32; 3] {
+    [(pixel >> 16) & 255, (pixel >> 8) & 255, pixel & 255]
+}
+fn ink(pixels: &[i32]) -> usize {
+    pixels
+        .iter()
+        .filter(|p| rgb(**p).iter().all(|c| *c < 180))
+        .count()
+}
+fn colored(pixels: &[i32]) -> usize {
+    pixels
+        .iter()
+        .filter(|p| {
+            let [r, g, b] = rgb(**p);
+            r.max(g).max(b) - r.min(g).min(b) > 16
+        })
+        .count()
+}
+
 fn check(
     j: &mut J<'_>,
     frame: &O,
-    layer: i64,
+    layer: &ProbeLayer,
     scale: f64,
     wayland: bool,
     clicks: &AtomicUsize,
@@ -429,19 +566,80 @@ fn check(
         None
     };
     await_pixel(j, frame, &robot, &captures, 64, 40, [255; 3])?;
+    if !wayland {
+        let [ox, oy] = origin(j, frame)?;
+        let color = j.obj(
+            &robot,
+            "getPixelColor",
+            "(II)Ljava/awt/Color;",
+            &[A::I(ox + 336), A::I(oy + 40)],
+        )?;
+        println!(
+            "swingReference={},{},{}",
+            j.int(&color, "getRed")?,
+            j.int(&color, "getGreen")?,
+            j.int(&color, "getBlue")?
+        );
+    }
     let input = click(j, frame, &robot, wayland, clicks)?;
     ensure!(
         input || wayland && std::env::var_os("CRANPOSE_PROBE_PARENT_DISPLAY").is_none(),
         "Baseline native input unavailable"
     );
     clicks.store(0, Ordering::Relaxed);
+    if std::env::var_os("CRANPOSE_PROBE_EFFECTS").is_some() {
+        let ProbeLayer::Direct(target) = layer else {
+            anyhow::bail!("Effects require the direct bridge");
+        };
+        return effects(j, frame, target, scale, &captures, &robot, wayland, clicks);
+    }
+    let mut presentation = match layer {
+        ProbeLayer::Direct(target) => {
+            let presentation = cranpose_plugin_gpu::Presentation::new(target.clone())?;
+            println!("adapter={:?}", presentation.adapter.get_info());
+            Some(presentation)
+        }
+        _ => None,
+    };
+    #[allow(unused_mut)] // macOS uses an independent color-managed native reference.
+    let mut expected = if matches!(layer, ProbeLayer::Direct(_)) {
+        [128; 3]
+    } else {
+        [159, 191, 255]
+    };
+    #[cfg(target_os = "macos")]
+    if let Some(presentation) = &mut presentation {
+        // Core Animation blends in the display's color space. Compare with an
+        // independent CALayer background, rather than Java2D's baked RGB value.
+        presentation.reference(Some([0.0, 0.0, 0.0, 0.5]))?;
+        presentation.clear([0.0; 4])?;
+        thread::sleep(Duration::from_millis(200));
+        let [x, y] = origin(j, frame)?;
+        let color = j.obj(
+            &robot,
+            "getPixelColor",
+            "(II)Ljava/awt/Color;",
+            &[A::I(x + 64), A::I(y + 40)],
+        )?;
+        expected = [
+            j.int(&color, "getRed")?,
+            j.int(&color, "getGreen")?,
+            j.int(&color, "getBlue")?,
+        ];
+        println!("Core Animation alpha reference={expected:?}");
+        ensure!(
+            expected.iter().all(|v| (90..180).contains(v)),
+            "Native reference did not blend"
+        );
+        presentation.reference(None)?;
+    }
     for y in [32, 72, 32] {
-        present(j, layer, scale, y, 32)?;
-        await_pixel(j, frame, &robot, &captures, 64, y + 8, [159, 191, 255])?;
+        present(j, layer, &mut presentation, scale, y, 32)?;
+        await_pixel(j, frame, &robot, &captures, 64, y + 8, expected)?;
         await_pixel(j, frame, &robot, &captures, 24, y + 8, [255; 3])?;
         await_pixel(j, frame, &robot, &captures, 64, y - 8, [255; 3])?;
     }
-    present(j, layer, scale, 120, 48)?;
+    present(j, layer, &mut presentation, scale, 120, 48)?;
     ensure!(
         !input || click(j, frame, &robot, wayland, clicks)?,
         "GPU layer intercepted input"
@@ -459,7 +657,179 @@ fn check(
     Ok(())
 }
 
-fn present(j: &mut J<'_>, layer: i64, scale: f64, y: i32, height: i32) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn effects(
+    j: &mut J<'_>,
+    frame: &O,
+    target: &cranpose_plugin_gpu::Target,
+    scale: f64,
+    captures: &Option<PathBuf>,
+    robot: &O,
+    wayland: bool,
+    clicks: &AtomicUsize,
+) -> Result<()> {
+    use cranpose_plugin_decorations::{Controller, CounterFrame, Frame, LightningFrame};
+    let controller = Controller::new(target.clone())?;
+    let bounds = cranpose_plugin_gpu::Bounds {
+        x: 32.0,
+        y: 32.0,
+        width: 256,
+        height: 32,
+        scale,
+    };
+    let scene = |count| Frame {
+        counters: vec![CounterFrame {
+            id: 1,
+            bounds: [0.0, 0.0, 256.0, 32.0],
+            clip: [0.0, 0.0, 256.0, 32.0],
+            label: format!("Preview · {count} recompositions"),
+            progress: 1.0,
+            foreground: [0.12, 0.15, 0.23, 1.0],
+        }],
+        lightning: None,
+    };
+    controller.update(bounds, scene(7))?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let before = loop {
+        if let Some(error) = controller.error() {
+            anyhow::bail!("{error}");
+        }
+        let image = capture(j, frame, captures)?;
+        if ink(&pixels(j, &image, [32, 32, 256, 32])?) > 40 {
+            break image;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "Counter text did not become visible"
+        );
+        thread::sleep(Duration::from_millis(30));
+    };
+    save_capture(j, &before, "counter-before.png")?;
+    controller.update(bounds, scene(8))?;
+    thread::sleep(Duration::from_millis(950));
+    let settled = controller.frames_presented();
+    thread::sleep(Duration::from_millis(150));
+    ensure!(
+        controller.frames_presented() == settled,
+        "Idle decorations kept rendering"
+    );
+    if let Some(error) = controller.error() {
+        anyhow::bail!("{error}");
+    }
+    controller.update(cranpose_plugin_gpu::Bounds { y: 72.0, ..bounds }, scene(8))?;
+    thread::sleep(Duration::from_millis(150));
+    let after = capture(j, frame, captures)?;
+    save_capture(j, &after, "counter-after.png")?;
+    ensure!(
+        ink(&pixels(j, &after, [32, 72, 256, 32])?) > 40,
+        "Moving the native layer lost the counter text"
+    );
+    ensure!(
+        pixels(j, &after, [32, 32, 256, 32])?
+            .iter()
+            .all(|p| rgb(*p).iter().all(|c| *c > 250)),
+        "Scrolling left stale GPU pixels behind"
+    );
+    let a = pixels(j, &before, [32, 32, 256, 32])?;
+    let b = pixels(j, &after, [32, 72, 256, 32])?;
+    ensure!(
+        a.iter()
+            .zip(&b)
+            .filter(|(a, b)| rgb(**a)
+                .iter()
+                .zip(rgb(**b))
+                .any(|(a, b)| (*a - b).abs() > 20))
+            .count()
+            > 8,
+        "Counter count did not update"
+    );
+    let mut bolt = scene(8);
+    bolt.lightning = Some(LightningFrame {
+        from: [16.0, 70.0],
+        target: [188.0, 94.0, 50.0, 20.0],
+        size: [256.0, 160.0],
+        request: 1,
+        pending: false,
+        progress: 0.0,
+    });
+    controller.update(
+        cranpose_plugin_gpu::Bounds {
+            height: 160,
+            ..bounds
+        },
+        bolt,
+    )?;
+    thread::sleep(Duration::from_millis(180));
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut painted = 0;
+    while Instant::now() < deadline {
+        let image = capture(j, frame, captures)?;
+        let count = colored(&pixels(j, &image, [32, 66, 256, 95])?);
+        if count > painted {
+            painted = count;
+            save_capture(j, &image, "lightning.png")?;
+        }
+        if painted > 80 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    ensure!(
+        painted > 80,
+        "Shared GPU lightning did not appear: {painted} colored pixels"
+    );
+    ensure!(
+        click(j, frame, robot, wayland, clicks)?,
+        "Shared GPU layer intercepted native input"
+    );
+    thread::sleep(Duration::from_millis(1000));
+    let image = capture(j, frame, captures)?;
+    ensure!(
+        colored(&pixels(j, &image, [32, 66, 256, 54])?) == 0,
+        "Finished lightning left colored pixels"
+    );
+    let settled = controller.frames_presented();
+    thread::sleep(Duration::from_millis(150));
+    ensure!(
+        controller.frames_presented() == settled,
+        "Finished lightning kept rendering"
+    );
+    controller.hide()?;
+    thread::sleep(Duration::from_millis(150));
+    await_pixel(j, frame, robot, captures, 64, 40, [255; 3])?;
+    println!(
+        "PASS: GPU counter text, count update, translated placement, lightning, native input and idle; frames={settled}; lightningPixels={painted}"
+    );
+    Ok(())
+}
+
+fn present(
+    j: &mut J<'_>,
+    layer: &ProbeLayer,
+    presentation: &mut Option<cranpose_plugin_gpu::Presentation>,
+    scale: f64,
+    y: i32,
+    height: i32,
+) -> Result<()> {
+    let layer = match layer {
+        ProbeLayer::Direct(target) => {
+            let target = target.clone();
+            edt(j, move |_| {
+                target.place(cranpose_plugin_gpu::Bounds {
+                    x: 32.0,
+                    y: f64::from(y),
+                    width: 256,
+                    height: height as u32,
+                    scale,
+                })
+            })?;
+            return presentation
+                .as_mut()
+                .context("Direct GPU presentation unavailable")?
+                .clear([0.0, 0.0, 0.0, 0.5]);
+        }
+        ProbeLayer::Fixture(handle) => *handle,
+    };
     edt(j, move |j| {
         j.static_void(
             "NativeLayerProbe",
@@ -526,53 +896,7 @@ fn await_pixel(
     loop {
         let [ox, oy] = origin(j, frame)?;
         let pixel = if let Some(captures) = captures {
-            let executable = std::env::var("CRANPOSE_PROBE_CAPTURE").context(
-                "Wayland requires a compositor capture; AWT Robot reads only Java's buffer",
-            )?;
-            let output = std::fs::File::create(captures.join("capture.log"))?;
-            let mut child = Command::new(executable)
-                .env("XDG_PICTURES_DIR", captures)
-                .stdout(Stdio::from(output.try_clone()?))
-                .stderr(Stdio::from(output))
-                .spawn()?;
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let status = loop {
-                if let Some(status) = child.try_wait()? {
-                    break status;
-                }
-                if Instant::now() >= deadline {
-                    child.kill()?;
-                    child.wait()?;
-                    anyhow::bail!("Compositor capture timed out");
-                }
-                thread::sleep(Duration::from_millis(20));
-            };
-            ensure!(
-                status.success(),
-                "Compositor capture failed: {}",
-                std::fs::read_to_string(captures.join("capture.log"))?
-            );
-            let latest = std::fs::read_dir(captures)?
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|extension| extension == "png"))
-                .max_by_key(|path| {
-                    path.metadata()
-                        .and_then(|metadata| metadata.modified())
-                        .ok()
-                })
-                .context("No compositor capture")?;
-            let file = j.new(
-                "java/io/File",
-                "(Ljava/lang/String;)V",
-                &[A::S(&latest.to_string_lossy())],
-            )?;
-            let image = j.static_obj(
-                "javax/imageio/ImageIO",
-                "read",
-                "(Ljava/io/File;)Ljava/awt/image/BufferedImage;",
-                &[A::O(&file)],
-            )?;
+            let image = compositor_capture(j, captures)?;
             j.call(&image, "getRGB", "(II)I", &[A::I(ox + x), A::I(oy + y)])?
                 .i()?
         } else {
@@ -598,4 +922,54 @@ fn await_pixel(
         );
         thread::sleep(Duration::from_millis(40));
     }
+}
+
+fn compositor_capture(j: &mut J<'_>, captures: &std::path::Path) -> Result<O> {
+    let executable = std::env::var("CRANPOSE_PROBE_CAPTURE")
+        .context("Wayland requires a compositor capture; AWT Robot reads only Java's buffer")?;
+    let output = std::fs::File::create(captures.join("capture.log"))?;
+    let mut child = Command::new(executable)
+        .env("XDG_PICTURES_DIR", captures)
+        .stdout(Stdio::from(output.try_clone()?))
+        .stderr(Stdio::from(output))
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            anyhow::bail!("Compositor capture timed out");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    ensure!(
+        status.success(),
+        "Compositor capture failed: {}",
+        std::fs::read_to_string(captures.join("capture.log"))?
+    );
+    let latest = std::fs::read_dir(captures)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "png"))
+        .max_by_key(|path| {
+            path.metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        })
+        .context("No compositor capture")?;
+    let file = j.new(
+        "java/io/File",
+        "(Ljava/lang/String;)V",
+        &[A::S(&latest.to_string_lossy())],
+    )?;
+    let image = j.static_obj(
+        "javax/imageio/ImageIO",
+        "read",
+        "(Ljava/io/File;)Ljava/awt/image/BufferedImage;",
+        &[A::O(&file)],
+    )?;
+    Ok(image)
 }

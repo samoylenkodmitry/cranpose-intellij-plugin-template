@@ -62,22 +62,6 @@ impl FrameCapture {
             self.received?,
         ))
     }
-    /// Count opaque pixels in the full frame and a target rectangle in one pass.
-    pub fn alpha_counts(&self, threshold: u8, target: [u32; 4]) -> (usize, usize) {
-        let (mut painted, mut impact) = (0, 0);
-        for (index, pixel) in self.rgba.as_chunks::<4>().0.iter().enumerate() {
-            if pixel[3] <= threshold {
-                continue;
-            }
-            painted += 1;
-            let x = index as u32 % self.width;
-            let y = index as u32 / self.width;
-            if (target[0]..target[2]).contains(&x) && (target[1]..target[3]).contains(&y) {
-                impact += 1;
-            }
-        }
-        (painted, impact)
-    }
 }
 
 pub(crate) fn text_node<'a>(view: &'a Value, expected: &str) -> Option<&'a Value> {

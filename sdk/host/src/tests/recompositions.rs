@@ -76,6 +76,14 @@ pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
                 == "Preview · 12 recompositions · 2 instances",
             "Aggregate label"
         );
+        crate::decorations::test_watch(j, &project, &first)?;
+        let gpu = &state.editors[0].placed[&key].gpu;
+        gpu.store(true, Ordering::Release);
+        ensure!(
+            glyphs::rendered(j, &inlay)?.is_empty(),
+            "GPU counter must not also draw Java2D text"
+        );
+        gpu.store(false, Ordering::Release);
         let pixels = glyphs::rendered(j, &inlay)?;
         ensure!(pixels.len() > 40, "Counter did not paint");
         let component = j.obj(&first, "getComponent", "()Ljavax/swing/JComponent;", &[])?;

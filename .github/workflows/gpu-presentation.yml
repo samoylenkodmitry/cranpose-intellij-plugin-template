@@ -1,7 +1,7 @@
 name: GPU presentation probes
 on:
   pull_request:
-    paths: ["sdk/tools/probes/**", ".github/workflows/gpu-presentation.yml"]
+    paths: ["Cargo.*", "sdk/gpu/**", "sdk/decorations/**", "sdk/authoring-ui/**", "sdk/host/**", "sdk/jvm-bridge/**", "sdk/tools/**", ".github/workflows/gpu-presentation.yml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,7 +11,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -26,6 +26,8 @@ jobs:
           }
       - run: cargo run --locked -p cranpose-template-tools -- gpu-probe fetch-runtime --output target/probe-runtime
       - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --java-home "$env:CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/windows
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --direct --java-home "$env:CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/windows-direct
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --direct --effects --java-home "$env:CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/windows-effects
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -33,7 +35,7 @@ jobs:
           path: target/gpu-probe
   linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -41,6 +43,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxtst-dev libxfixes-dev libxrender-dev libegl1-mesa-dev libgles2-mesa-dev libwayland-dev xvfb picom
       - run: cargo run --locked -p cranpose-template-tools -- gpu-probe fetch-runtime --output target/probe-runtime
       - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --java-home "$CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/linux --toolkit x11 --isolated
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --direct --java-home "$CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/linux-direct --toolkit x11 --isolated
+      - run: cargo run --locked -p cranpose-template-tools -- gpu-probe native --direct --effects --java-home "$CRANPOSE_PROBE_JAVA_HOME" --output target/gpu-probe/linux-effects --toolkit x11 --isolated
       - uses: actions/upload-artifact@v7
         if: always()
         with:

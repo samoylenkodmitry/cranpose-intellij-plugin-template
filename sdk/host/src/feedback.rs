@@ -2,7 +2,6 @@
 use crate::{
     jvm::{A, J, O},
     project::Project,
-    surface::{Panel, Surface},
 };
 use anyhow::Result;
 use cranpose_plugin_authoring::{Catalog, feedback::ViewTarget};
@@ -16,9 +15,15 @@ use std::{
 #[derive(Default)]
 pub struct State {
     edit: Option<Edit>,
-    overlay: Option<(Weak<Panel>, Weak<Surface>)>,
+    effect: Option<Effect>,
     showing: Option<Instant>,
     charging: bool,
+}
+#[derive(Clone)]
+struct Effect {
+    edit: Edit,
+    destination: Option<(O, [f64; 4], f64)>,
+    request: u64,
 }
 #[derive(Clone)]
 pub struct Edit {
@@ -210,10 +215,6 @@ pub fn parsed(project: &Arc<Project>, path: &str, stamp: i64, catalog: &Catalog,
         workspace.trace(Some(trace.clone()));
     }
 }
-pub fn attach(project: &Project, panel: &Arc<Panel>, surface: &Arc<Surface>) {
-    project.feedback.lock().expect("feedback").overlay =
-        Some((Arc::downgrade(panel), Arc::downgrade(surface)));
-}
 pub fn tick(project: &Project, j: &mut J<'_>) -> Result<()> {
     let (expired, pending) = {
         let state = project.feedback.lock().expect("feedback");
@@ -244,6 +245,9 @@ pub fn tick(project: &Project, j: &mut J<'_>) -> Result<()> {
             show(project, j, &edit, None)?;
         }
     }
+    if project.feedback.lock().expect("feedback").showing.is_some() {
+        crate::decorations::schedule(project, j)?;
+    }
     Ok(())
 }
 pub fn stop(project: &Project, j: &mut J<'_>) -> Result<()> {
@@ -251,22 +255,42 @@ pub fn stop(project: &Project, j: &mut J<'_>) -> Result<()> {
     cancel(project, j)
 }
 fn cancel(project: &Project, j: &mut J<'_>) -> Result<()> {
-    let overlay = {
-        let mut state = project.feedback.lock().expect("feedback");
-        state.charging = false;
-        state.showing.take().and_then(|_| state.overlay.clone())
-    };
-    if let Some((panel, surface)) = overlay {
-        if let Some(panel) = panel.upgrade() {
-            panel.message("ide.authoring.bolt", "{\"clear\":true}");
+    let mut state = project.feedback.lock().expect("feedback");
+    state.charging = false;
+    state.showing = None;
+    state.effect = None;
+    drop(state);
+    crate::decorations::schedule(project, j)
+}
+/// Recompute anchors on every geometry event without restarting the effect.
+pub(crate) fn decoration(
+    project: &Project,
+    j: &mut J<'_>,
+) -> Result<Option<crate::decorations::Bolt>> {
+    let effect = {
+        let state = project.feedback.lock().expect("feedback");
+        if state.showing.is_none_or(|at| {
+            at.elapsed()
+                > if state.charging {
+                    Duration::from_secs(10)
+                } else {
+                    Duration::from_millis(850)
+                }
+        }) {
+            return Ok(None);
         }
-        let Some(surface) = surface.upgrade() else {
-            return Ok(());
-        };
-        j.void(surface.component(), "setVisible", "(Z)V", &[A::Z(false)])?;
-        surface.clear_frame(j)?;
-    }
-    Ok(())
+        state.effect.clone()
+    };
+    let Some(effect) = effect else {
+        return Ok(None);
+    };
+    geometry(
+        project,
+        j,
+        &effect.edit,
+        effect.destination.as_ref().map(|(o, b, s)| (o, *b, *s)),
+        effect.request,
+    )
 }
 fn point(j: &mut J<'_>, from: &O, x: i32, y: i32, to: &O) -> Result<[i32; 2]> {
     let p = j.static_obj(
@@ -320,11 +344,35 @@ fn show(
     edit: &Edit,
     destination: Option<(&O, [f64; 4], f64)>,
 ) -> Result<bool> {
-    let (Some(file), Some(editor)) = project.selected(j)? else {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if geometry(project, j, edit, destination, request)?.is_none() {
         return Ok(false);
+    }
+    let mut state = project.feedback.lock().expect("feedback");
+    state.effect = Some(Effect {
+        edit: edit.clone(),
+        destination: destination.map(|(o, b, s)| (o.clone(), b, s)),
+        request,
+    });
+    state.showing = Some(Instant::now());
+    state.charging = destination.is_none();
+    drop(state);
+    crate::decorations::schedule(project, j)?;
+    Ok(true)
+}
+fn geometry(
+    project: &Project,
+    j: &mut J<'_>,
+    edit: &Edit,
+    destination: Option<(&O, [f64; 4], f64)>,
+    request: u64,
+) -> Result<Option<crate::decorations::Bolt>> {
+    let (Some(file), Some(editor)) = project.selected(j)? else {
+        return Ok(None);
     };
     if j.text(&file, "getPath")? != edit.path {
-        return Ok(false);
+        return Ok(None);
     }
     let doc = j.obj(
         &editor,
@@ -333,7 +381,7 @@ fn show(
         &[],
     )?;
     if j.long(&doc, "getModificationStamp")? != edit.stamp {
-        return Ok(false);
+        return Ok(None);
     }
     let content = j.obj(
         &editor,
@@ -342,7 +390,7 @@ fn show(
         &[],
     )?;
     if !j.bool(&content, "isShowing")? {
-        return Ok(false);
+        return Ok(None);
     }
     let root = j.static_obj(
         "javax/swing/SwingUtilities",
@@ -351,11 +399,11 @@ fn show(
         &[A::O(&content)],
     )?;
     if root.is_null() {
-        return Ok(false);
+        return Ok(None);
     }
     if let Some((preview, _, _)) = destination {
         if !j.bool(preview, "isShowing")? {
-            return Ok(false);
+            return Ok(None);
         }
         let other = j.static_obj(
             "javax/swing/SwingUtilities",
@@ -364,7 +412,7 @@ fn show(
             &[A::O(preview)],
         )?;
         if !j.same(&root, &other)? {
-            return Ok(false);
+            return Ok(None);
         }
     }
     let layer = j.obj(&root, "getLayeredPane", "()Ljavax/swing/JLayeredPane;", &[])?;
@@ -381,7 +429,7 @@ fn show(
         .call(&visible, "contains", "(II)Z", &[A::I(x), A::I(y - 1)])?
         .z()?
     {
-        return Ok(false);
+        return Ok(None);
     }
     let from = point(j, &content, x, y, &layer)?;
     let (target, bw, bh) = if let Some((preview, bounds, scale)) = destination {
@@ -396,80 +444,25 @@ fn show(
             )?
             .z()?
         {
-            return Ok(false);
+            return Ok(None);
         }
         let target = point(j, preview, bx as i32, by as i32, &layer)?;
         (target, bw, bh)
     } else {
         ([from[0] - 32, from[1] - 24], 64.0, 48.0)
     };
-    let (panel, surface) = {
-        let state = project.feedback.lock().expect("feedback");
-        let Some((p, s)) = &state.overlay else {
-            return Ok(false);
-        };
-        let (Some(p), Some(s)) = (p.upgrade(), s.upgrade()) else {
-            return Ok(false);
-        };
-        (p, s)
-    };
-    let parent = j.obj(
-        surface.component(),
-        "getParent",
-        "()Ljava/awt/Container;",
-        &[],
-    )?;
-    if !j.same(&parent, &layer)? {
-        if !parent.is_null() {
-            j.void(
-                &parent,
-                "remove",
-                "(Ljava/awt/Component;)V",
-                &[A::O(surface.component())],
-            )?;
-        }
-        j.obj(
-            &layer,
-            "add",
-            "(Ljava/awt/Component;)Ljava/awt/Component;",
-            &[A::O(surface.component())],
-        )?;
-        j.void(
-            &layer,
-            "setLayer",
-            "(Ljava/awt/Component;I)V",
-            &[A::O(surface.component()), A::I(450)],
-        )?;
-    }
-    // Render only the arc's bounding rectangle, not the entire IDE window.
-    let left = (from[0].min(target[0]) - 40).max(0);
-    let top = (from[1].min(target[1]) - 48).max(0);
-    let right = (from[0].max(target[0] + bw.ceil() as i32) + 40).min(j.int(&layer, "getWidth")?);
-    let bottom = (from[1].max(target[1] + bh.ceil() as i32) + 48).min(j.int(&layer, "getHeight")?);
-    if right <= left || bottom <= top {
-        return Ok(false);
-    }
-    surface.clear_frame(j)?;
-    j.void(
-        surface.component(),
-        "setBounds",
-        "(IIII)V",
-        &[
-            A::I(left),
-            A::I(top),
-            A::I(right - left),
-            A::I(bottom - top),
-        ],
-    )?;
-    surface.size(j)?;
-    j.void(surface.component(), "setVisible", "(Z)V", &[A::Z(true)])?;
-    panel.send(crate::protocol::Packet::new(13).int(surface.id).byte(1));
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    panel.message("ide.authoring.bolt",&json!({"request":NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed),"phase":if destination.is_some(){"ready"}else{"pending"},"from":[from[0]-left,from[1]-top],"target":[target[0]-left,target[1]-top,bw,bh],"size":[right-left,bottom-top]}).to_string());
-    let mut state = project.feedback.lock().expect("feedback");
-    state.showing = Some(Instant::now());
-    state.charging = destination.is_none();
-    Ok(true)
+    Ok(Some(crate::decorations::Bolt {
+        component: layer,
+        editor,
+        frame: cranpose_plugin_decorations::LightningFrame {
+            from: from.map(|v| v as f32),
+            target: [target[0] as f32, target[1] as f32, bw as f32, bh as f32],
+            size: [1.0, 1.0],
+            request,
+            pending: destination.is_none(),
+            progress: 0.0,
+        },
+    }))
 }
 
 #[cfg(feature = "ide-tests")]

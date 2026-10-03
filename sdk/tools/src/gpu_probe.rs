@@ -23,6 +23,11 @@ pub enum Task {
         output: PathBuf,
     },
     Native {
+        /// Verify Cranpose text, finite shaders, scrolling and settled idle.
+        #[arg(long, requires = "direct")]
+        effects: bool,
+        #[arg(long)]
+        direct: bool,
         #[arg(long)]
         java_home: PathBuf,
         #[arg(long)]
@@ -41,6 +46,8 @@ pub fn run(task: Task) -> Result<()> {
         Task::Metal { ide, output } => metal(&ide, &output),
         Task::FetchRuntime { output } => fetch_runtime(&output),
         Task::Native {
+            effects,
+            direct,
             java_home,
             output,
             toolkit,
@@ -52,6 +59,8 @@ pub fn run(task: Task) -> Result<()> {
             toolkit.as_deref(),
             isolated,
             weston_root.as_deref(),
+            direct,
+            effects,
         ),
     }
 }
@@ -225,6 +234,8 @@ fn native(
     toolkit: Option<&str>,
     isolated: bool,
     weston_root: Option<&Path>,
+    direct: bool,
+    effects: bool,
 ) -> Result<()> {
     fs::create_dir_all(output)?;
     let output = compiler_path(output)?;
@@ -248,10 +259,14 @@ fn native(
                 ))
                 .arg("/link")
                 .arg(format!("/OUT:{}", library.display()))
+                .arg(format!(
+                    "/IMPLIB:{}",
+                    output.join("native_layer_probe.lib").display()
+                ))
                 .arg(format!("/LIBPATH:{}", java_home.join("lib").display()))
                 .args(["jawt.lib", "d3d11.lib", "dxgi.lib", "dcomp.lib"]),
         )?;
-    } else {
+    } else if !cfg!(target_os = "macos") {
         ensure!(
             cfg!(target_os = "linux"),
             "Native layer probe currently supports Windows and Linux; Metal texture probe is separate"
@@ -307,9 +322,16 @@ fn native(
         true,
         &vm_options,
     )?;
-    command
-        .env("CRANPOSE_PROBE_LIBRARY", &library)
-        .env("CRANPOSE_PROBE_OUTPUT", &output);
+    command.env("CRANPOSE_PROBE_OUTPUT", &output);
+    if library.exists() {
+        command.env("CRANPOSE_PROBE_LIBRARY", &library);
+    }
+    if direct {
+        command.env("CRANPOSE_PROBE_KIND", "direct");
+    }
+    if effects {
+        command.env("CRANPOSE_PROBE_EFFECTS", "1");
+    }
     if let Some(toolkit) = toolkit {
         command.env("CRANPOSE_PROBE_TOOLKIT", toolkit);
     }

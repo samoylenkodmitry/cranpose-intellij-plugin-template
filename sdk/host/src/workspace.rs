@@ -27,7 +27,7 @@ pub struct Workspace {
     viewport: O,
     scope: Scope,
     state: Mutex<State>,
-    counters: Mutex<crate::recompositions::Inlays>,
+    pub(crate) counters: Mutex<crate::recompositions::Inlays>,
     closed: AtomicBool,
 }
 struct State {
@@ -43,6 +43,11 @@ struct State {
     menu: Option<i64>,
 }
 impl Workspace {
+    fn clear_counters(&self, j: &mut J<'_>) -> Result<()> {
+        self.counters.lock().expect("counters").clear(j)?;
+        crate::decorations::schedule(&self.project, j)
+    }
+
     pub fn has_preview(&self) -> bool {
         let state = self.state.lock().expect("workspace");
         state.active.is_some() || state.candidate.is_some()
@@ -164,7 +169,7 @@ impl Workspace {
                         workspace.connected(j)?;
                     } else {
                         workspace.state.lock().expect("workspace").ready = false;
-                        workspace.counters.lock().expect("counters").clear(j)?;
+                        workspace.clear_counters(j)?;
                         j.void(&workspace.viewport, "setVisible", "(Z)V", &[A::Z(false)])?;
                     }
                 }
@@ -247,7 +252,7 @@ impl Workspace {
         match request["action"].as_str().unwrap_or_default() {
             "start" => self.start(j, &request)?,
             "stop" => {
-                self.counters.lock().expect("counters").clear(j)?;
+                self.clear_counters(j)?;
                 let (candidate, active) = {
                     let mut state = self.state.lock().expect("workspace");
                     (state.candidate.take(), state.active.take())
@@ -278,6 +283,7 @@ impl Workspace {
                         &self.project.object,
                         &rows,
                     )?;
+                    crate::decorations::schedule(&self.project, j)?;
                 }
             }
             "menu" => self.menu(j, &request)?,
@@ -440,7 +446,7 @@ impl Workspace {
                     if !current {
                         return panel.close(j);
                     }
-                    workspace.counters.lock().expect("counters").clear(j)?;
+                    workspace.clear_counters(j)?;
                     if let Some((_, old)) = old {
                         workspace.close_child(j, &old)?;
                     }
@@ -467,7 +473,7 @@ impl Workspace {
                     };
                     if let Some((event, fallback)) = event {
                         if fallback == 0 {
-                            workspace.counters.lock().expect("counters").clear(j)?;
+                            workspace.clear_counters(j)?;
                         }
                         workspace.close_child(j, panel)?;
                         workspace.event(
@@ -807,7 +813,7 @@ impl Workspace {
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        self.counters.lock().expect("counters").clear(j)?;
+        self.clear_counters(j)?;
         let children = {
             let mut state = self.state.lock().expect("workspace");
             state.pending.clear();
