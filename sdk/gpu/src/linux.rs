@@ -4,8 +4,8 @@ mod wayland;
 #[path = "linux/x11.rs"]
 mod x11;
 pub enum Layer {
-    X11(x11::Layer),
-    Wayland(wayland::Layer),
+    X11(Box<x11::Layer>),
+    Wayland(Box<wayland::Layer>),
 }
 impl Layer {
     pub fn new(env: &mut JNIEnv<'_>, window: &JObject<'_>) -> Result<Self> {
@@ -25,9 +25,9 @@ impl Layer {
             .l()?;
         let name = String::from(env.get_string(&JString::from(name))?);
         if name == "sun.awt.wl.WLToolkit" {
-            Ok(Self::Wayland(wayland::Layer::new(env, window)?))
+            Ok(Self::Wayland(Box::new(wayland::Layer::new(env, window)?)))
         } else if name == "sun.awt.X11.XToolkit" {
-            Ok(Self::X11(x11::Layer::new(env, window)?))
+            Ok(Self::X11(Box::new(x11::Layer::new(env, window)?)))
         } else {
             anyhow::bail!("Unsupported AWT toolkit: {name}")
         }

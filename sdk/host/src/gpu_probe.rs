@@ -708,6 +708,7 @@ fn effects(
     controller.update(bounds, scene(8))?;
     thread::sleep(Duration::from_millis(950));
     let settled = controller.frames_presented();
+    println!("settledFrames={settled}");
     thread::sleep(Duration::from_millis(150));
     ensure!(
         controller.frames_presented() == settled,
@@ -718,6 +719,10 @@ fn effects(
     }
     controller.update(cranpose_plugin_gpu::Bounds { y: 72.0, ..bounds }, scene(8))?;
     thread::sleep(Duration::from_millis(150));
+    println!("framesAfterMove={}", controller.frames_presented());
+    if let Some(error) = controller.error() {
+        anyhow::bail!("{error}");
+    }
     let after = capture(j, frame, captures)?;
     save_capture(j, &after, "counter-after.png")?;
     ensure!(
@@ -789,6 +794,7 @@ fn effects(
         "Finished lightning left colored pixels"
     );
     let settled = controller.frames_presented();
+    println!("settledFrames={settled}");
     thread::sleep(Duration::from_millis(150));
     ensure!(
         controller.frames_presented() == settled,
