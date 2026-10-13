@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-intellij-ui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "cranpose",
  "cranpose-animation",
@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-jvm-bridge"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "tempfile",
 ]
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-authoring"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-authoring-ui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "cranpose",
  "cranpose-animation",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-cache"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "sha2 0.10.9",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-decorations"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "cranpose",
@@ -1041,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-gpu"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "cranpose-wgpu",
@@ -1065,7 +1065,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-host"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "cranpose-plugin-authoring",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-process"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "ctrlc",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-tools"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-ui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "cranpose",
  "cranpose-core",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-ux"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-plugin-watch"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "cranpose-render-common"
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-template-host"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "cranpose-plugin-host",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "cranpose-template-tools"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "cranpose-plugin-tools",
