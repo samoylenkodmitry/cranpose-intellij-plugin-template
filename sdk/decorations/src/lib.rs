@@ -176,7 +176,6 @@ fn run(target: Target, mailbox: &Arc<Mailbox>) -> Result<()> {
     let mut renderer = WgpuRenderer::with_text_system(WgpuTextSystem::from_fonts(&[]));
     renderer.set_transparent_background(true);
     let mut bounds = target.bounds();
-    renderer.set_root_scale(bounds.scale as f32);
     renderer.init_gpu(
         presentation.device.clone(),
         presentation.queue.clone(),
@@ -244,7 +243,6 @@ fn run(target: Target, mailbox: &Arc<Mailbox>) -> Result<()> {
             target.place(bounds)?;
             let [w, h] = bounds.pixels();
             shell.set_density(bounds.scale as f32);
-            shell.renderer().set_root_scale(bounds.scale as f32);
             shell.set_buffer_size(w, h);
             shell.set_viewport(bounds.width as f32, bounds.height as f32);
         }
