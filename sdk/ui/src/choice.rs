@@ -143,6 +143,7 @@ pub fn CompactChoice(
             text_style: label_style(palette, false),
             cursor_color: palette.accent,
             line_limits: TextFieldLineLimits::SingleLine,
+            ..BasicTextFieldOptions::default()
         },
     );
     let query = search.text();

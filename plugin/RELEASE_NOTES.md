@@ -1,4 +1,19 @@
-# Cranpose plugin template 0.9.0
+# Cranpose plugin template 0.10.0
+
+- The SDK builds on Cranpose 0.9.32 from crates.io in place of a 0.1.176
+  commit. The GPU crate uses the `cranpose-wgpu` fork that Cranpose renders
+  with, so devices and textures pass between them as one `wgpu` type.
+- New Project creates the Showcase 0.1.28 starter on Cranpose 0.9.32: Wear OS
+  and Apple Watch apps, CI and release builds of every target, a TestFlight
+  workflow and the cranpose-build workflow for Apple builds from Linux or
+  Windows. A new package depends on `cranpose = "0.9.32"`.
+- `AppShell` sets the renderer's root scale from its density, so the
+  decorations no longer call `set_root_scale`.
+
+Consumers that pin Cranpose themselves move to 0.9.32 with this release; two
+framework versions in one graph do not share types.
+
+## Included since 0.9.0
 
 - Shared native GPU presentation for animated editor counters and edit-to-preview
   lightning: Metal on macOS, DirectComposition/DX12 on Windows, and Vulkan on
