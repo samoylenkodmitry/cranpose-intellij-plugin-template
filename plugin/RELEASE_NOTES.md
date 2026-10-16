@@ -1,4 +1,10 @@
-# Cranpose plugin template 0.10.1
+# Cranpose plugin template 0.10.2
+
+- New Project creates the Showcase 0.1.30 starter. Its Release workflow
+  installs cranpose-build for the web bundle, which the 0.1.29 starter's
+  Release workflow did not, so a tagged release failed there.
+
+## Included since 0.10.1
 
 - The SDK builds on Cranpose 0.13.0 from crates.io.
 - The GPU crate uses `wgpu` 30.0.1 from crates.io, which Cranpose renders with

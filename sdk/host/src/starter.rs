@@ -7,10 +7,10 @@ use std::{
     path::{Component, Path},
 };
 pub const SHOWCASE_REPOSITORY: &str = "https://github.com/samoylenkodmitry/cranpose-showcase";
-pub const SHOWCASE_REVISION: &str = "178fd4ba77a90908691f161607f69fe85cef9677";
+pub const SHOWCASE_REVISION: &str = "8511f12335a1d56889ba4d8517ed8e44ca3508ce";
 pub const SHOWCASE_FRAMEWORK_VERSION: &str = "0.13.0";
 const SHOWCASE_ARCHIVE: &[u8] = include_bytes!("../assets/showcase.zip");
-const SHOWCASE_SHA256: &str = "7465a55733fbd93194e742718fffbe7b8e4cb40ad7dae78e14cadce0ac02cdd3";
+const SHOWCASE_SHA256: &str = "8e22bc2b6ba9a32c8160b1146e0a9d1dfde812b9aa89e569ed039c8667f5a144";
 
 /// The bundled starter's desktop entry is known before Cargo (or even Rust) is
 /// installed. Keep this contract tied to the pinned archive in the tests below.
@@ -296,7 +296,7 @@ mod tests {
             }
             files += 1;
         }
-        assert_eq!(files, 89);
+        assert_eq!(files, 90);
         assert_eq!(
             fs::read_to_string(root.join(".idea/keep.xml")).expect("metadata"),
             "existing"
