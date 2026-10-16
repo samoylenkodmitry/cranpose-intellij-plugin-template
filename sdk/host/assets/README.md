@@ -1,14 +1,14 @@
 # Bundled Showcase starter
 
 `showcase.zip` is the unmodified GitHub source archive of
-[samoylenkodmitry/cranpose-showcase v0.1.28 at 80b5b06dee46531918bb3f0d39a9cbcd6a736aed](https://github.com/samoylenkodmitry/cranpose-showcase/tree/80b5b06dee46531918bb3f0d39a9cbcd6a736aed).
-It uses Cranpose 0.9.32 and includes its Apache-2.0 LICENSE, README, assets,
+[samoylenkodmitry/cranpose-showcase v0.1.29 at 178fd4ba77a90908691f161607f69fe85cef9677](https://github.com/samoylenkodmitry/cranpose-showcase/tree/178fd4ba77a90908691f161607f69fe85cef9677).
+It uses Cranpose 0.13.0 and includes its Apache-2.0 LICENSE, README, assets,
 platform projects and original executable permissions. These are upstream
 files; the plugin never executes starter scripts during project creation.
 
-Source: https://codeload.github.com/samoylenkodmitry/cranpose-showcase/zip/80b5b06dee46531918bb3f0d39a9cbcd6a736aed
+Source: https://codeload.github.com/samoylenkodmitry/cranpose-showcase/zip/178fd4ba77a90908691f161607f69fe85cef9677
 
-SHA-256: `b8fcb85f4d071d30b8284940f8ccbb22955bbeaa38d90fadfc5851937bd22a9d`
+SHA-256: `7465a55733fbd93194e742718fffbe7b8e4cb40ad7dae78e14cadce0ac02cdd3`
 
 The SDK embeds this archive in its native host so New Project works without
 Git, download utilities or an internet connection. The hash is checked before

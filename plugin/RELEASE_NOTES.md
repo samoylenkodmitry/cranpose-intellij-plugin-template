@@ -4,6 +4,8 @@
 - The GPU crate uses `wgpu` 30.0.1 from crates.io, which Cranpose renders with
   on desktop since 0.13.0, so devices and textures still pass between them as
   one `wgpu` type.
+- New Project creates the Showcase 0.1.29 starter on Cranpose 0.13.0. A new
+  package depends on `cranpose = "0.13.0"`.
 
 Consumers that pin Cranpose themselves move to 0.13.0 with this release; two
 framework versions in one graph do not share types.
