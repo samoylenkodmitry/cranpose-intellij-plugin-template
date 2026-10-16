@@ -1,4 +1,14 @@
-# Cranpose plugin template 0.10.0
+# Cranpose plugin template 0.10.1
+
+- The SDK builds on Cranpose 0.13.0 from crates.io.
+- The GPU crate uses `wgpu` 30.0.1 from crates.io, which Cranpose renders with
+  on desktop since 0.13.0, so devices and textures still pass between them as
+  one `wgpu` type.
+
+Consumers that pin Cranpose themselves move to 0.13.0 with this release; two
+framework versions in one graph do not share types.
+
+## Included since 0.10.0
 
 - The SDK builds on Cranpose 0.9.32 from crates.io in place of a 0.1.176
   commit. The GPU crate uses the `cranpose-wgpu` fork that Cranpose renders

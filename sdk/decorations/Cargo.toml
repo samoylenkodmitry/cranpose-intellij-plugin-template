@@ -8,9 +8,9 @@ license.workspace = true
 anyhow = "1"
 cranpose-plugin-gpu = { path = "../gpu" }
 cranpose-plugin-authoring-ui = { path = "../authoring-ui" }
-cranpose = { version = "0.9.32", features = ["renderer-wgpu"] }
-cranpose-core = { version = "0.9.32" }
-cranpose-app-shell = { version = "0.9.32" }
-cranpose-render-wgpu = { version = "0.9.32" }
+cranpose = { version = "0.13.0", features = ["renderer-wgpu"] }
+cranpose-core = { version = "0.13.0" }
+cranpose-app-shell = { version = "0.13.0" }
+cranpose-render-wgpu = { version = "0.13.0" }
 [lints]
 workspace = true
