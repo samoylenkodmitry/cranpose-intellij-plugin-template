@@ -81,6 +81,14 @@ impl Arch {
             Self::Arm64 => MSVC_ARM64,
         }
     }
+    /// The components a build for this architecture links with. ARM64
+    /// builds do not link the static shader compiler, so they need no ATL.
+    pub fn components(self) -> &'static [Component] {
+        match self {
+            Self::X64 => &[MSVC_X64, WINDOWS_SDK, ATL_X64],
+            Self::Arm64 => &[MSVC_ARM64, WINDOWS_SDK],
+        }
+    }
 }
 
 /// What a PC's Visual Studio lacks for a native build.
@@ -94,17 +102,22 @@ pub struct WindowsBuildTools {
 }
 
 impl WindowsBuildTools {
-    /// Inspects this PC for a build for [`Arch::host`]. Other systems take
-    /// none of these tools, so nothing is missing there.
+    /// Inspects this PC for a build for [`Arch::host`].
     pub fn detect() -> Self {
+        Self::detect_for(Arch::host())
+    }
+
+    /// Inspects this PC for a build for `arch`. Other systems take none of
+    /// these tools, so nothing is missing there.
+    pub fn detect_for(arch: Arch) -> Self {
         if !cfg!(windows) {
             return Self {
                 installation: None,
                 missing: Vec::new(),
-                arch: Arch::host(),
+                arch,
             };
         }
-        Self::inspect(&installations(), windows_kits().as_deref(), Arch::host())
+        Self::inspect(&installations(), windows_kits().as_deref(), arch)
     }
 
     /// Inspects `installations`, in the order `vswhere` lists them, which is
@@ -133,8 +146,7 @@ impl WindowsBuildTools {
                 .join("atls.lib")
                 .is_file()
         });
-        // ARM64 builds do not link the static shader compiler.
-        if arch == Arch::X64 && !atl {
+        if arch.components().contains(&ATL_X64) && !atl {
             missing.push(ATL_X64);
         }
         Self {
@@ -149,9 +161,10 @@ impl WindowsBuildTools {
     }
 
     /// The command that installs what is missing: the Visual Studio
-    /// Installer adds the components to the installation found, and winget
-    /// installs the Build Tools with them on a PC without one. `None` when
-    /// nothing is missing.
+    /// Installer opens on the installation found with the components
+    /// selected, and winget installs the Build Tools with them on a PC
+    /// without one. The person confirms in the installer's window, which
+    /// shows the license. `None` when nothing is missing.
     pub fn install(&self) -> Option<Install> {
         if self.ready() {
             return None;
@@ -166,7 +179,7 @@ impl WindowsBuildTools {
                 for component in &self.missing {
                     args.extend(["--add".to_owned(), component.id.to_owned()]);
                 }
-                args.extend(["--passive".to_owned(), "--norestart".to_owned()]);
+                args.push("--norestart".to_owned());
                 Install {
                     program: installer_directory().join("setup.exe"),
                     args,
@@ -174,7 +187,7 @@ impl WindowsBuildTools {
             }
             None => {
                 let mut components = vec![
-                    "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+                    "--wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
                         .to_owned(),
                 ];
                 if self.arch == Arch::Arm64 {

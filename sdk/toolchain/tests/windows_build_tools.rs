@@ -103,7 +103,6 @@ fn build_tools_without_atl_add_atl_to_that_installation() {
             &build_tools.display().to_string(),
             "--add",
             ATL_X64.id,
-            "--passive",
             "--norestart",
         ]
     );
