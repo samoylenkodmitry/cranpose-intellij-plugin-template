@@ -1,0 +1,13 @@
+[package]
+name = "cranpose-plugin-toolchain"
+description = "The C++ build tools a native Windows build of a Cranpose app needs, and the command that installs missing ones"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cranpose-plugin-process = { path = "../process" }
+[dev-dependencies]
+tempfile = "3"
+[lints]
+workspace = true

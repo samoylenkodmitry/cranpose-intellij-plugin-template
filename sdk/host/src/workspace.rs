@@ -7,6 +7,7 @@ use crate::{
     surface::Panel,
 };
 use anyhow::{Context, Result};
+use cranpose_plugin_toolchain::WindowsBuildTools;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -344,7 +345,8 @@ impl Workspace {
                 self.follow_source(j, &path)?;
             }
             "configure" => crate::run_configuration::create_selected(&self.project, j)?,
-            "setupRust" => rust_setup(j)?,
+            "setupRust" => browse(j, "https://rust-lang.org/tools/install/")?,
+            "setupWindowsTools" => windows_tools_setup(j)?,
             "export" => self.export(j)?,
             _ => {}
         }
@@ -371,6 +373,10 @@ impl Workspace {
             );
             return Ok(());
         };
+        if let Some(stopped) = windows_tools_stop() {
+            self.event(id, "stopped", stopped);
+            return Ok(());
+        }
         let mut options = request["options"].clone();
         let valid = {
             let snapshot = self.project.snapshot.lock().expect("snapshot");
@@ -1255,13 +1261,47 @@ pub fn docs(j: &mut J<'_>) -> Result<()> {
     )
 }
 
-fn rust_setup(j: &mut J<'_>) -> Result<()> {
+fn browse(j: &mut J<'_>, url: &str) -> Result<()> {
     j.static_void(
         "com/intellij/ide/BrowserUtil",
         "browse",
         "(Ljava/lang/String;)V",
-        &[A::S("https://rust-lang.org/tools/install/")],
+        &[A::S(url)],
     )
+}
+
+/// The stop event of a Windows PC whose Visual Studio lacks C++ parts a
+/// Cranpose build links with, `None` when it has them all. A PC found
+/// complete is not inspected again while the IDE runs.
+fn windows_tools_stop() -> Option<Value> {
+    static READY: AtomicBool = AtomicBool::new(false);
+    if READY.load(Ordering::Relaxed) {
+        return None;
+    }
+    let tools = WindowsBuildTools::detect();
+    if tools.ready() {
+        READY.store(true, Ordering::Relaxed);
+        return None;
+    }
+    Some(json!({
+        "setup": "windows",
+        "message": "Visual Studio lacks C++ parts the build links with. Install them, then choose Retry.",
+        "missing": tools.missing.iter().map(|component| component.title).collect::<Vec<_>>(),
+        "command": tools.install().map(|install| install.powershell()).unwrap_or_default(),
+    }))
+}
+
+/// Starts the Visual Studio Installer, or winget on a PC without Visual
+/// Studio, for the missing parts. Opens the Build Tools page when neither
+/// starts.
+fn windows_tools_setup(j: &mut J<'_>) -> Result<()> {
+    let Some(install) = WindowsBuildTools::detect().install() else {
+        return Ok(());
+    };
+    if install.spawn().is_ok() {
+        return Ok(());
+    }
+    browse(j, cranpose_plugin_toolchain::BUILD_TOOLS_PAGE)
 }
 
 #[cfg(feature = "ide-tests")]
