@@ -272,7 +272,7 @@ fn run(target: Target, mailbox: &Arc<Mailbox>) -> Result<()> {
         let [w, h] = bounds.pixels();
         shell
             .renderer()
-            .render_surface_texture(&texture.texture, &view, w, h)
+            .render_surface_texture(&texture, &view, w, h)
             .map_err(|error| anyhow::anyhow!("Cranpose GPU render: {error:?}"))?;
         shell.renderer().present(texture);
         presentation.commit()?;
