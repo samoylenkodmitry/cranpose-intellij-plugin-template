@@ -881,6 +881,15 @@ pub fn binary(j: &mut J<'_>) -> Result<PathBuf> {
     Ok(binary)
 }
 pub fn cache(j: &mut J<'_>) -> Result<PathBuf> {
+    // MSVC's link.exe and cl.exe stop at 260 characters, and Cargo nests up
+    // to about 125 below a target directory. The IDE's system directory,
+    // `%LOCALAPPDATA%\JetBrains\<product><version>`, leaves too little room
+    // for a preview's private builds below it.
+    if cfg!(windows)
+        && let Some(local) = std::env::var_os("LOCALAPPDATA")
+    {
+        return Ok(PathBuf::from(local).join("cranpose-dev"));
+    }
     let path = j.static_obj(
         "com/intellij/openapi/application/PathManager",
         "getSystemPath",

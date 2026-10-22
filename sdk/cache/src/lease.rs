@@ -26,7 +26,7 @@ impl WorkspaceLease {
     /// Identity should include the canonical project path and a format/version tag.
     /// Busy slots are skipped without waiting; concurrent callers get distinct paths.
     pub fn acquire(root: &Path, identity: &[u8]) -> Result<Self> {
-        let namespace = root.join(format!("{:x}", Sha256::digest(identity)));
+        let namespace = root.join(short_digest(identity));
         fs::create_dir_all(&namespace)?;
         for entry in fs::read_dir(&namespace)? {
             let entry = entry?;
@@ -111,8 +111,10 @@ impl WorkspaceLease {
             !source.starts_with(&self.slot),
             "Tool source belongs to this lease"
         );
-        let identity = Sha256::digest(source.as_os_str().as_encoded_bytes());
-        let directory = self.slot.join("tools").join(format!("{identity:x}"));
+        let directory = self
+            .slot
+            .join("tools")
+            .join(short_digest(source.as_os_str().as_encoded_bytes()));
         fs::create_dir_all(&directory)?;
         let alias = directory.join(source.file_name().context("tool filename")?);
         match fs::symlink_metadata(&alias) {
@@ -140,6 +142,16 @@ impl WorkspaceLease {
         fs::write(self.slot.join("state"), READY)?;
         Ok(())
     }
+}
+
+/// The first 64 bits of the SHA-256 of `bytes`, in hex. A lease's build
+/// output lies below this name, and MSVC's linker fails on paths past 260
+/// characters: the whole 64-digit hash took a quarter of that.
+fn short_digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn copy_executable(source: &Path, destination: &Path) -> Result<()> {
