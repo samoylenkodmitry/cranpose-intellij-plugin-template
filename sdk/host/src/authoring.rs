@@ -1065,7 +1065,21 @@ fn pointer(project: &Arc<Project>, j: &mut J<'_>, event: &O, focus: bool) -> Res
     if j.text(&document, "getText")? != source {
         return hover(project, j, None);
     }
-    open_control(project, j, &editor, &point, (id, catalog, source), focus)
+    // The control belongs to the glyph under the pointer, not to the pointer.
+    let bounds = j.obj(&inlay, "getBounds", "()Ljava/awt/Rectangle;", &[])?;
+    if bounds.is_null() {
+        return hover(project, j, None);
+    }
+    let glyph = [j.field_int(&bounds, "x")?, j.field_int(&bounds, "width")?];
+    open_control(
+        project,
+        j,
+        &editor,
+        &point,
+        glyph,
+        (id, catalog, source),
+        focus,
+    )
 }
 
 fn dismiss_control(project: &Project, j: &mut J<'_>) -> Result<()> {
@@ -1128,6 +1142,7 @@ fn open_control(
     j: &mut J<'_>,
     editor: &O,
     point: &O,
+    glyph: [i32; 2],
     target: (usize, Catalog, String),
     focus: bool,
 ) -> Result<()> {
@@ -1317,7 +1332,7 @@ fn open_control(
         "()Ljavax/swing/JComponent;",
         &[],
     )?;
-    let x = j.field_int(point, "x")?;
+    let [glyph_x, glyph_width] = glyph;
     let visual = j.obj(
         editor,
         "xyToVisualPosition",
@@ -1332,8 +1347,8 @@ fn open_control(
     )?;
     let line_top = j.field_int(&line_point, "y")?;
     let line_height = j.int(editor, "getLineHeight")?;
-    let y = line_top + line_height + 6;
-    let below = j.new("java/awt/Point", "(II)V", &[A::I(x), A::I(y)])?;
+    let y = line_top + line_height + crate::popup::GAP;
+    let below = j.new("java/awt/Point", "(II)V", &[A::I(glyph_x), A::I(y)])?;
     let relative = j.new(
         "com/intellij/ui/awt/RelativePoint",
         "(Ljava/awt/Component;Ljava/awt/Point;)V",
@@ -1355,16 +1370,23 @@ fn open_control(
         let origin = j.obj(&component, "getLocationOnScreen", "()Ljava/awt/Point;", &[])?;
         let source_left = j.field_int(&origin, "x")?;
         let source_top = j.field_int(&origin, "y")? + line_top;
-        let anchor = j.new(
+        let anchor = crate::popup::Anchor {
+            line_left: source_left,
+            line_top: source_top,
+            line_height,
+            value_left: source_left + glyph_x,
+            value_right: source_left + glyph_x + glyph_width,
+        };
+        let value = j.new(
             "java/awt/Point",
             "(II)V",
-            &[A::I(source_left + x), A::I(source_top)],
+            &[A::I(anchor.value_left), A::I(anchor.line_top)],
         )?;
         let screen = j.static_obj(
             "com/intellij/ui/ScreenUtil",
             "getScreenRectangle",
             "(Ljava/awt/Point;)Ljava/awt/Rectangle;",
-            &[A::O(&anchor)],
+            &[A::O(&value)],
         )?;
         let size = j.obj(&popup, "getSize", "()Ljava/awt/Dimension;", &[])?;
         let screen = [
@@ -1374,9 +1396,7 @@ fn open_control(
             j.field_int(&screen, "height")?,
         ];
         let size = [j.field_int(&size, "width")?, j.field_int(&size, "height")?];
-        if let Some([x, y]) =
-            crate::popup::position(screen, size, [source_left, source_top, x + 16, line_height])
-        {
+        if let Some([x, y]) = crate::popup::position(screen, size, anchor) {
             let location = j.new("java/awt/Point", "(II)V", &[A::I(x), A::I(y)])?;
             j.void(
                 &popup,
