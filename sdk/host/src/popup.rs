@@ -47,23 +47,41 @@ pub fn activate(j: &mut J<'_>, popup: &O, component: &O) -> Result<()> {
     })
 }
 
-/// Rectangles are [left, top, width, height] in Swing logical coordinates.
-/// Prefer below, then above, then beside the protected source. If the screen
-/// cannot fit the control without covering its source, leave source editing free.
-pub fn position(screen: [i32; 4], size: [i32; 2], source: [i32; 4]) -> Option<[i32; 2]> {
+/// Space between the line or the value and the popup window's frame, in pixels.
+/// Any border or shadow IntelliJ draws inside the frame adds to it. That inset
+/// has not been measured in a running IDE and is not subtracted here.
+pub const GAP: i32 = 2;
+
+/// Where a value sits in the editor, in Swing logical screen coordinates.
+#[derive(Clone, Copy)]
+pub struct Anchor {
+    /// Left edge of the editor's text area, where every line starts.
+    pub line_left: i32,
+    pub line_top: i32,
+    pub line_height: i32,
+    /// Horizontal extent of the value's glyph on that line.
+    pub value_left: i32,
+    pub value_right: i32,
+}
+
+/// `screen` is [left, top, width, height] and `size` is [width, height].
+/// The popup's left edge goes to the value's left edge, clamped to the screen.
+/// Prefer just below the line, then just above it, then beside the value. If the
+/// screen cannot fit the control without covering the line up to the value,
+/// leave source editing free.
+pub fn position(screen: [i32; 4], size: [i32; 2], anchor: Anchor) -> Option<[i32; 2]> {
     let [sx, sy, sw, sh] = screen;
     let [width, height] = size;
-    let [left, top, span, line] = source;
     if width > sw || height > sh || width <= 0 || height <= 0 {
         return None;
     }
-    let x = (left + span).clamp(sx, sx + sw - width);
-    let y = top.clamp(sy, sy + sh - height);
+    let x = anchor.value_left.clamp(sx, sx + sw - width);
+    let y = anchor.line_top.clamp(sy, sy + sh - height);
     [
-        [x, top + line + 6],
-        [x, top - height - 6],
-        [left + span + 6, y],
-        [left - width - 6, y],
+        [x, anchor.line_top + anchor.line_height + GAP],
+        [x, anchor.line_top - height - GAP],
+        [anchor.value_right + GAP, y],
+        [anchor.line_left - width - GAP, y],
     ]
     .into_iter()
     .find(|[x, y]| *x >= sx && *y >= sy && x + width <= sx + sw && y + height <= sy + sh)
@@ -259,23 +277,5 @@ pub(crate) fn list_test(j: &mut J<'_>) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn source_remains_clear_near_edges_and_on_offset_monitors() {
-        for screen in [[0, 0, 1600, 900], [-1600, -200, 1600, 900]] {
-            for top in [10, 390, 780] {
-                let source = [screen[0] + 40, screen[1] + top, 700, 24];
-                let [x, y] = position(screen, [400, 490], source).expect("space beside line");
-                assert!(
-                    y + 490 <= source[1]
-                        || y >= source[1] + 24
-                        || x + 400 <= source[0]
-                        || x >= source[0] + 700
-                );
-            }
-        }
-        assert!(position([0, 0, 400, 400], [400, 490], [0, 100, 400, 24]).is_none());
-        assert!(position([0, 0, 500, 600], [400, 490], [0, 290, 500, 24]).is_none());
-    }
-}
+#[path = "tests/popup.rs"]
+mod tests;

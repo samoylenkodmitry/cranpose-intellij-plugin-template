@@ -9,9 +9,12 @@ No application restart is required for source navigation.
 
 Live controls leave source presses to the editor. IntelliJ's outside-click
 cancellation is disabled because it consumes the first click; the editor listener
-dismisses the control on mouse press without consuming that event. Popup placement
-prefers below or above the source line, then beside it. If there is no safe room,
-the control stays hidden instead of covering the source. The renderer is reused.
+dismisses the control on mouse press without consuming that event. The popup's
+left edge starts at the left edge of the hovered value glyph, not at the pointer.
+Placement prefers just below the source line, then just above it, then beside the
+value. If there is no safe room, the control stays hidden instead of covering the
+source. The gap to the line is measured to the popup window's frame; the frame's
+own border and shadow inset is not subtracted. The renderer is reused.
 
 The authoring catalog groups `Color`, `Color::rgba`, `Color::rgb`,
 `Color::from_rgba_u8` and `Color::from_rgb_u8` with literal channels as one color.
