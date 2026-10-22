@@ -210,6 +210,22 @@ impl WindowsBuildTools {
     }
 }
 
+/// The component whose absence a line of a failed Windows link reports, in
+/// rustc's or link.exe's words.
+pub fn missing_for_link_error(line: &str) -> Option<Component> {
+    if line.contains("LNK1104") && line.contains("atls.lib") {
+        Some(ATL_X64)
+    } else if line.contains("linker `link.exe` not found") {
+        Some(Arch::host().msvc())
+    } else if (line.contains("LNK1104") || line.contains("LNK1181"))
+        && line.contains("kernel32.lib")
+    {
+        Some(WINDOWS_SDK)
+    } else {
+        None
+    }
+}
+
 /// A command that installs Visual Studio components.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Install {

@@ -1,5 +1,5 @@
 use cranpose_plugin_toolchain::{
-    ATL_X64, Arch, MSVC_ARM64, MSVC_X64, WINDOWS_SDK, WindowsBuildTools,
+    ATL_X64, Arch, MSVC_ARM64, MSVC_X64, WINDOWS_SDK, WindowsBuildTools, missing_for_link_error,
 };
 use std::{
     fs,
@@ -206,4 +206,26 @@ fn detection_finishes_on_every_host() {
     if !cfg!(windows) {
         assert!(tools.ready(), "only Windows needs Visual Studio: {tools:?}");
     }
+}
+
+#[test]
+fn link_errors_name_the_missing_component() {
+    assert_eq!(
+        missing_for_link_error(
+            "          = note: LINK : fatal error LNK1104: cannot open file 'atls.lib'"
+        ),
+        Some(ATL_X64)
+    );
+    assert_eq!(
+        missing_for_link_error("error: linker `link.exe` not found"),
+        Some(Arch::host().components()[0])
+    );
+    assert_eq!(
+        missing_for_link_error("LINK : fatal error LNK1181: cannot open input file 'kernel32.lib'"),
+        Some(WINDOWS_SDK)
+    );
+    assert_eq!(
+        missing_for_link_error("error[E0425]: cannot find value `atls` in this scope"),
+        None
+    );
 }
