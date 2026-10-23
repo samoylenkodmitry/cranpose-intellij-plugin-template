@@ -292,8 +292,12 @@ thread_local! {
 /// calls `Callback.run` on the same object while it holds the lock, and
 /// `take_replay` returns the event there. `None` means the lock is already held.
 pub fn replay_under_write_intent(j: &mut J<'_>, receiver: &O, event: &O) -> Result<Option<O>> {
-    let app = j.application()?;
-    if j.bool(&app, "isWriteIntentLockAcquired")? {
+    // The GPU probes run the host in a plain JVM that has no IDE classes.
+    let Ok(app) = j.application() else {
+        j.env.exception_clear()?;
+        return Ok(None);
+    };
+    if app.is_null() || j.bool(&app, "isWriteIntentLockAcquired")? {
         return Ok(None);
     }
     REPLAY.set(Some(event.clone()));
