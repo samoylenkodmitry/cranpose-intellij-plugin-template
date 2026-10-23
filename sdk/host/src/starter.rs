@@ -7,10 +7,10 @@ use std::{
     path::{Component, Path},
 };
 pub const SHOWCASE_REPOSITORY: &str = "https://github.com/samoylenkodmitry/cranpose-showcase";
-pub const SHOWCASE_REVISION: &str = "885abb5b625bfdd25745f7092db05a6d28964a95";
-pub const SHOWCASE_FRAMEWORK_VERSION: &str = "0.17.1";
+pub const SHOWCASE_REVISION: &str = "ac5f13715a1ad28aaf1e956532dfec1f33c40458";
+pub const SHOWCASE_FRAMEWORK_VERSION: &str = "0.17.2";
 const SHOWCASE_ARCHIVE: &[u8] = include_bytes!("../assets/showcase.zip");
-const SHOWCASE_SHA256: &str = "d0d5892f7ed7cb30c3b56119b81842969de40e76503ed06f0e7ca322994f6dc3";
+const SHOWCASE_SHA256: &str = "447c55708c0ae331209d1044edb07be662bee3c1513fc09c7006733922cf73a8";
 
 /// The bundled starter's desktop entry is known before Cargo (or even Rust) is
 /// installed. Keep this contract tied to the pinned archive in the tests below.
