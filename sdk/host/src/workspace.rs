@@ -347,6 +347,8 @@ impl Workspace {
             "configure" => crate::run_configuration::create_selected(&self.project, j)?,
             "setupRust" => browse(j, "https://rust-lang.org/tools/install/")?,
             "setupWindowsTools" => windows_tools_setup(j)?,
+            "updateCranpose" => self.project.update_cranpose(j)?,
+            "cranposeReleases" => browse(j, crate::framework::RELEASES)?,
             "export" => self.export(j)?,
             _ => {}
         }

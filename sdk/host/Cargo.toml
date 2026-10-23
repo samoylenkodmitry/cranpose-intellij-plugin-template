@@ -24,10 +24,10 @@ regex = "1"
 tempfile = "3"
 sha2 = "0.10"
 zip = { version = "4", default-features = false, features = ["deflate"] }
+toml_edit = "0.22"
 
 [dev-dependencies]
 ctrlc = { version = "3", features = ["termination"] }
-toml_edit = "0.22"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

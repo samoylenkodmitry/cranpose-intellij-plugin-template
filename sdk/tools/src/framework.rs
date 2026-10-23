@@ -1,6 +1,7 @@
 //! Development-only Cargo overrides. Never used by packaging or the runtime.
 use anyhow::{Context, Result, bail, ensure};
 use clap::Args;
+use cranpose_ide_host::framework;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -209,58 +210,9 @@ fn require_checkout_versions(
     document: &mut toml_edit::DocumentMut,
     crates: &BTreeMap<String, Crate>,
 ) {
-    const KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
-    let root = document.as_table_mut();
-    for kind in KINDS {
-        if let Some(table) = root
-            .get_mut(kind)
-            .and_then(toml_edit::Item::as_table_like_mut)
-        {
-            require_in(table, crates);
-        }
-    }
-    if let Some(table) = root
-        .get_mut("workspace")
-        .and_then(|workspace| workspace.get_mut("dependencies"))
-        .and_then(toml_edit::Item::as_table_like_mut)
-    {
-        require_in(table, crates);
-    }
-    if let Some(targets) = root
-        .get_mut("target")
-        .and_then(toml_edit::Item::as_table_like_mut)
-    {
-        for (_, target) in targets.iter_mut() {
-            for kind in KINDS {
-                if let Some(table) = target
-                    .get_mut(kind)
-                    .and_then(toml_edit::Item::as_table_like_mut)
-                {
-                    require_in(table, crates);
-                }
-            }
-        }
-    }
-}
-
-fn require_in(table: &mut dyn toml_edit::TableLike, crates: &BTreeMap<String, Crate>) {
-    for (key, item) in table.iter_mut() {
-        let name = item
-            .as_table_like()
-            .and_then(|dependency| dependency.get("package"))
-            .and_then(toml_edit::Item::as_str)
-            .unwrap_or(key.get());
-        let Some(krate) = crates.get(name) else {
-            continue;
-        };
-        if item.is_str() {
-            *item = toml_edit::value(krate.version.as_str());
-        } else if let Some(dependency) = item.as_table_like_mut()
-            && dependency.contains_key("version")
-        {
-            dependency.insert("version", toml_edit::value(krate.version.as_str()));
-        }
-    }
+    framework::require_versions(document, &|name| {
+        crates.get(name).map(|krate| krate.version.as_str())
+    });
 }
 
 /// The `[patch]` key of a resolved package source, `None` for a source
@@ -472,30 +424,12 @@ fn verify(value: &Value, repository: &str, crates: &BTreeMap<String, Crate>) -> 
     Ok(report)
 }
 
-/// The manifests of the workspace at `root`: its root manifest and every
-/// member's, each once.
-fn workspace_manifests(root: &Path) -> Result<BTreeSet<PathBuf>> {
-    let workspace = metadata(root, true)?;
-    let mut manifests = BTreeSet::from([root.join("Cargo.toml").canonicalize()?]);
-    for package in packages(&workspace)? {
-        manifests.insert(
-            PathBuf::from(
-                package["manifest_path"]
-                    .as_str()
-                    .context("Missing member manifest path")?,
-            )
-            .canonicalize()?,
-        );
-    }
-    Ok(manifests)
-}
-
 fn apply(root: &Path, checkout: &Path, source: &str, copies: &Path) -> Result<Vec<Value>> {
     let crates = catalog(checkout)?;
     let manifest = root.join("Cargo.toml").canonicalize()?;
     let lock = root.join("Cargo.lock");
     let mut originals = BTreeMap::new();
-    for path in workspace_manifests(root)? {
+    for path in framework::workspace_manifests(&metadata(root, true)?)? {
         let text = fs::read_to_string(&path)?;
         originals.insert(path, text);
     }

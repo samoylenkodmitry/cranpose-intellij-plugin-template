@@ -3,6 +3,7 @@ mod authoring;
 mod decorations;
 mod editor;
 mod feedback;
+pub mod framework;
 pub mod glyphs;
 #[cfg(feature = "ide-tests")]
 mod gpu_probe;
