@@ -42,6 +42,7 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                     "transparent editor overlay preserves source",
                     crate::surface::Surface::test_overlay_paint,
                 ),
+                ("New Project menu entries", new_project_entries),
                 ("persistent Cargo configuration", configuration),
                 ("first run configuration", initial_configuration),
                 ("native Cranpose rendering", native_ui),
@@ -200,6 +201,49 @@ fn surface(j: &mut J<'_>) -> Result<()> {
     panel.primary.set_scale(j, f64::NAN)?;
     panel.close(j)?;
     panel.close(j)?;
+    Ok(())
+}
+/// A descriptor that registers the New Cranpose Project action, as the optional
+/// Android Studio one does, must put it in the Welcome screen and File | New.
+fn new_project_entries(j: &mut J<'_>) -> Result<()> {
+    let manager = j.static_obj(
+        "com/intellij/openapi/actionSystem/ActionManager",
+        "getInstance",
+        "()Lcom/intellij/openapi/actionSystem/ActionManager;",
+        &[],
+    )?;
+    let find = |j: &mut J<'_>, id: &str| {
+        j.obj(
+            &manager,
+            "getAction",
+            "(Ljava/lang/String;)Lcom/intellij/openapi/actionSystem/AnAction;",
+            &[A::S(id)],
+        )
+    };
+    let action = find(j, "Cranpose.NewProject")?;
+    if action.is_null() {
+        return Ok(());
+    }
+    ensure!(
+        j.env
+            .is_instance_of(&action, "dev/cranpose/rust/NewProjectAction")?,
+        "New Project action class"
+    );
+    for id in ["WelcomeScreen.QuickStart", "NewProjectOrModuleGroup"] {
+        let group = find(j, id)?;
+        ensure!(!group.is_null(), "Missing action group {id}");
+        let children = j.obj(
+            &group,
+            "getChildren",
+            "(Lcom/intellij/openapi/actionSystem/AnActionEvent;)[Lcom/intellij/openapi/actionSystem/AnAction;",
+            &[A::Null],
+        )?;
+        let mut listed = false;
+        for child in j.elements(&children)? {
+            listed |= j.same(&child, &action)?;
+        }
+        ensure!(listed, "New Project action missing from {id}");
+    }
     Ok(())
 }
 fn target(id: &str) -> crate::model::Target {
