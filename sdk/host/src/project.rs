@@ -1,5 +1,6 @@
 //! IntelliJ project services, authored in Rust.
 use crate::{
+    framework,
     jvm::{self, A, J, O, Scope},
     model::{self, Snapshot, Target},
     session::Options,
@@ -34,6 +35,8 @@ pub struct Project {
     pub closed: AtomicBool,
     timer: OnceLock<O>,
     metadata: Mutex<Option<mpsc::Receiver<Result<Snapshot, String>>>>,
+    /// The result of moving the project to the newest Cranpose.
+    update: Mutex<Option<mpsc::Receiver<Result<(), String>>>>,
     pub process: Mutex<Option<O>>,
     editor_stamp: Mutex<String>,
     editor_key: Mutex<Option<(String, i64)>>,
@@ -64,6 +67,7 @@ impl Project {
             closed: AtomicBool::new(false),
             timer: OnceLock::new(),
             metadata: Mutex::new(None),
+            update: Mutex::new(None),
             process: Mutex::new(None),
             editor_stamp: Mutex::new(String::new()),
             editor_key: Mutex::new(None),
@@ -228,6 +232,42 @@ impl Project {
             *self.snapshot.lock().expect("snapshot") = snapshot;
             self.publish();
         }
+        let updated = self
+            .update
+            .lock()
+            .expect("update")
+            .as_ref()
+            .and_then(|r| r.try_recv().ok());
+        if let Some(updated) = updated {
+            self.update.lock().expect("update").take();
+            let mut snapshot = self.snapshot.lock().expect("snapshot");
+            snapshot.busy = false;
+            match updated {
+                Ok(()) => {
+                    drop(snapshot);
+                    self.refresh(j)?;
+                }
+                Err(error) => {
+                    snapshot.status = error;
+                    drop(snapshot);
+                    self.publish();
+                }
+            }
+        }
+        let changed = {
+            let mut snapshot = self.snapshot.lock().expect("snapshot");
+            match framework::latest_if_changed(snapshot.cranpose.latest.as_deref()) {
+                Some(latest) => {
+                    snapshot.cranpose =
+                        framework::Versions::new(snapshot.cranpose.used.take(), latest);
+                    true
+                }
+                None => false,
+            }
+        };
+        if changed {
+            self.publish();
+        }
         self.update_editor(j, false)?;
         crate::editor::fit_overlays(self, j)?;
         crate::authoring::tick(self, j)?;
@@ -296,6 +336,7 @@ impl Project {
             snapshot.status = "Reading Cargo workspace…".into();
         }
         self.publish();
+        framework::look_up_latest();
         let root = self.root.clone();
         let (sender, receiver) = mpsc::channel();
         *self.metadata.lock().expect("metadata") = Some(receiver);
@@ -327,10 +368,43 @@ impl Project {
                     "{}",
                     String::from_utf8_lossy(&output.stderr)
                 );
-                model::metadata(&String::from_utf8(output.stdout)?)
+                let mut snapshot = model::metadata(&String::from_utf8(output.stdout)?)?;
+                let used = std::fs::read_to_string(root.join("Cargo.lock"))
+                    .ok()
+                    .as_deref()
+                    .and_then(framework::locked_version);
+                snapshot.cranpose = framework::Versions::new(used, framework::latest());
+                Ok(snapshot)
             })()
             .map_err(|e| format!("{e:#}"));
             let _ = sender.send(result);
+        });
+        Ok(())
+    }
+    /// Moves the project's Cranpose requirements to the newest release and
+    /// refreshes the project once Cargo resolves it.
+    pub fn update_cranpose(self: &Arc<Self>, j: &mut J<'_>) -> Result<()> {
+        if !self.trusted(j)? {
+            return Ok(());
+        }
+        let version = {
+            let mut snapshot = self.snapshot.lock().expect("snapshot");
+            let Some(version) = snapshot.cranpose.latest.clone() else {
+                return Ok(());
+            };
+            if snapshot.busy || !snapshot.cranpose.newer {
+                return Ok(());
+            }
+            snapshot.busy = true;
+            snapshot.status = format!("Updating Cranpose to {version}…");
+            version
+        };
+        self.publish();
+        let root = self.root.clone();
+        let (sender, receiver) = mpsc::channel();
+        *self.update.lock().expect("update") = Some(receiver);
+        std::thread::spawn(move || {
+            let _ = sender.send(framework::update(&root, &version).map_err(|e| format!("{e:#}")));
         });
         Ok(())
     }

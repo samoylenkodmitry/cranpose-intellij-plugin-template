@@ -23,6 +23,8 @@ pub struct Snapshot {
     pub selected: String,
     pub root: String,
     pub diagnostics: Vec<Value>,
+    /// The Cranpose the project resolves and the newest release.
+    pub cranpose: crate::framework::Versions,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -33,6 +35,7 @@ impl Default for Snapshot {
             selected: String::new(),
             root: String::new(),
             diagnostics: vec![],
+            cranpose: Default::default(),
         }
     }
 }
@@ -244,8 +247,9 @@ pub fn starter_manifest(name: &str) -> Result<String> {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'),
         "Use lowercase letters, digits, hyphens or underscores, starting with a letter."
     );
+    let version = crate::starter::SHOWCASE_FRAMEWORK_VERSION;
     Ok(format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ncranpose = {{ version = \"0.13.0\", features = [\"desktop\", \"preview\"] }}\n"
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ncranpose = {{ version = \"{version}\", features = [\"desktop\", \"preview\"] }}\n"
     ))
 }
 #[cfg(test)]
@@ -295,7 +299,10 @@ mod tests {
         assert!(
             starter_manifest("field-notes")
                 .expect("manifest")
-                .contains("cranpose = { version = \"0.13.0\"")
+                .contains(&format!(
+                    "cranpose = {{ version = \"{}\"",
+                    crate::starter::SHOWCASE_FRAMEWORK_VERSION
+                ))
         );
     }
     #[test]

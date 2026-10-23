@@ -1,4 +1,17 @@
-# Cranpose plugin template 0.10.2
+# Cranpose plugin template 0.10.3
+
+- New Project creates the Showcase 0.1.31 starter on Cranpose 0.17.1.
+- The project snapshot reports the Cranpose the project resolves and the
+  newest on crates.io, which `cargo search` finds through Cargo's own network
+  settings. The `updateCranpose` action moves the workspace's Cranpose
+  requirements to it and resolves the lockfile again, or restores both when
+  Cargo cannot.
+- The SDK builds on Cranpose 0.17.0, and the GPU crate uses `cranpose-wgpu`,
+  which Cranpose renders with on every platform since 0.16.
+- The framework override of the Cranpose main check also rewrites Cranpose
+  requirements that main's version does not meet.
+
+## Cranpose plugin template 0.10.2
 
 - New Project creates the Showcase 0.1.30 starter. Its Release workflow
   installs cranpose-build for the web bundle, which the 0.1.29 starter's
