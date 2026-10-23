@@ -76,6 +76,143 @@ pub fn dispatch(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Res
         _ => anyhow::bail!("Unknown project wizard operation: {operation}"),
     }
 }
+static NEW_STARTERS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// File → New → Cranpose Project. Android Studio's New Project dialog lists no
+/// plugin generators, so it gets this action instead of the wizard pages.
+pub fn create(j: &mut J<'_>) -> Result<()> {
+    let Some(root) = choose_location(j)? else {
+        return Ok(());
+    };
+    if let Err(error) = starter::validate_destination(&root) {
+        return show_error(j, &format!("{error:#}"));
+    }
+    let cache = project::cache(j)?.join("starters");
+    let outcome = Arc::new(std::sync::Mutex::new(None));
+    let worker = outcome.clone();
+    let target = root.clone();
+    let id = jvm::register(move |j, _, _| {
+        let result = starter::generate(&target, &cache, || false).map_err(|e| format!("{e:#}"));
+        *worker.lock().expect("starter outcome") = Some(result);
+        j.null()
+    });
+    let work = jvm::callback(j, id)?;
+    let progress = j.static_obj(
+        "com/intellij/openapi/progress/ProgressManager",
+        "getInstance",
+        "()Lcom/intellij/openapi/progress/ProgressManager;",
+        &[],
+    )?;
+    let ran = j.call(
+        &progress,
+        "runProcessWithProgressSynchronously",
+        "(Ljava/lang/Runnable;Ljava/lang/String;ZLcom/intellij/openapi/project/Project;)Z",
+        &[
+            A::O(&work),
+            A::S("Creating Cranpose project…"),
+            A::Z(false),
+            A::Null,
+        ],
+    );
+    jvm::unregister(id);
+    ran?;
+    let created = outcome.lock().expect("starter outcome").take();
+    match created {
+        Some(Ok(())) => open_new(j, &root),
+        Some(Err(error)) => show_error(j, &error),
+        None => Ok(()),
+    }
+}
+fn choose_location(j: &mut J<'_>) -> Result<Option<PathBuf>> {
+    let extensions = j.array("java/lang/String", &[])?;
+    let descriptor = j.new(
+        "com/intellij/openapi/fileChooser/FileSaverDescriptor",
+        "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)V",
+        &[
+            A::S("New Cranpose Project"),
+            A::S("Choose the location and name of the project folder"),
+            A::O(&extensions),
+        ],
+    )?;
+    let factory = j.static_obj(
+        "com/intellij/openapi/fileChooser/FileChooserFactory",
+        "getInstance",
+        "()Lcom/intellij/openapi/fileChooser/FileChooserFactory;",
+        &[],
+    )?;
+    let dialog = j.obj(
+        &factory,
+        "createSaveFileDialog",
+        "(Lcom/intellij/openapi/fileChooser/FileSaverDescriptor;Lcom/intellij/openapi/project/Project;)Lcom/intellij/openapi/fileChooser/FileSaverDialog;",
+        &[A::O(&descriptor), A::Null],
+    )?;
+    let chosen = j.obj(
+        &dialog,
+        "save",
+        "(Ljava/nio/file/Path;Ljava/lang/String;)Lcom/intellij/openapi/vfs/VirtualFileWrapper;",
+        &[A::Null, A::S("cranpose-app")],
+    )?;
+    if chosen.is_null() {
+        return Ok(None);
+    }
+    let file = j.obj(&chosen, "getFile", "()Ljava/io/File;", &[])?;
+    Ok(Some(PathBuf::from(j.text(&file, "getPath")?)))
+}
+fn show_error(j: &mut J<'_>, message: &str) -> Result<()> {
+    j.static_void(
+        "com/intellij/openapi/ui/Messages",
+        "showErrorDialog",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        &[A::S(message), A::S("New Cranpose Project")],
+    )
+}
+fn open_new(j: &mut J<'_>, root: &std::path::Path) -> Result<()> {
+    NEW_STARTERS
+        .lock()
+        .expect("new starters")
+        .push(root.canonicalize()?);
+    let none = j.array("java/lang/String", &[])?;
+    let path = j.static_obj(
+        "java/nio/file/Path",
+        "of",
+        "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;",
+        &[A::S(&root.to_string_lossy()), A::O(&none)],
+    )?;
+    j.static_void(
+        "com/intellij/ide/trustedProjects/TrustedProjects",
+        "setProjectTrusted",
+        "(Ljava/nio/file/Path;Z)V",
+        &[A::O(&path), A::Z(true)],
+    )?;
+    let task = j.static_obj(
+        "com/intellij/ide/impl/OpenProjectTask",
+        "build",
+        "()Lcom/intellij/ide/impl/OpenProjectTask;",
+        &[],
+    )?;
+    j.static_obj(
+        "com/intellij/ide/impl/ProjectUtil",
+        "openOrImport",
+        "(Ljava/nio/file/Path;Lcom/intellij/ide/impl/OpenProjectTask;)Lcom/intellij/openapi/project/Project;",
+        &[A::O(&path), A::O(&task)],
+    )?;
+    Ok(())
+}
+/// Run the new-project steps in a project that the New Cranpose Project action
+/// created. The wizard's own project reaches them through `generate`.
+pub fn adopt(project: &Project) {
+    let Ok(root) = project.root.canonicalize() else {
+        return;
+    };
+    let mut pending = NEW_STARTERS.lock().expect("new starters");
+    let Some(index) = pending.iter().position(|p| *p == root) else {
+        return;
+    };
+    pending.swap_remove(index);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let _ = sender.send(Ok(root));
+    project.authoring.lock().expect("authoring").generation = Some(receiver);
+}
 fn peer(j: &mut J<'_>, class: &str, settings: Option<&O>) -> Result<O> {
     let mut options = project::options(j, false)?;
     options

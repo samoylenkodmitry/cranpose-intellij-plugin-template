@@ -465,6 +465,30 @@ pub fn ensure_target(project: &Project, j: &mut J<'_>, target: &Target) -> Resul
     Ok(settings)
 }
 
+/// Give a project that has no run configuration the one for its selected target.
+/// An IDE without a Rust plugin has no Cargo configurations, so its toolbar Run
+/// button stays empty until Cranpose adds one. A project that has a run
+/// configuration of any type is left alone.
+pub fn ensure_initial(project: &Project, j: &mut J<'_>) -> Result<()> {
+    let target = {
+        let snapshot = project.snapshot.lock().expect("snapshot");
+        snapshot
+            .targets
+            .iter()
+            .find(|t| t.id == snapshot.selected)
+            .cloned()
+    };
+    let Some(target) = target else {
+        return Ok(());
+    };
+    let manager = manager(project, j)?;
+    let all = j.obj(&manager, "getAllSettings", "()Ljava/util/List;", &[])?;
+    if j.bool(&all, "isEmpty")? {
+        ensure_target(project, j, &target)?;
+    }
+    Ok(())
+}
+
 fn manager(project: &Project, j: &mut J<'_>) -> Result<O> {
     j.static_obj(
         "com/intellij/execution/RunManager",

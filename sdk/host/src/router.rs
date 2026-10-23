@@ -7,6 +7,22 @@ use anyhow::Result;
 use std::sync::Arc;
 
 pub fn dispatch(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Result<O> {
+    match operation {
+        "Callback.actionPerformed" => {
+            if let Some(done) = jvm::replay_under_write_intent(j, receiver, &args[0])? {
+                return Ok(done);
+            }
+        }
+        "Callback.run" => {
+            if let Some(event) = jvm::take_replay() {
+                return route(j, "Callback.actionPerformed", receiver, &[event]);
+            }
+        }
+        _ => {}
+    }
+    route(j, operation, receiver, args)
+}
+fn route(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Result<O> {
     // IntelliJ can retain a gutter renderer in a paint cache after its range
     // highlighter is disposed. Non-null properties must outlive native callbacks.
     match operation {
@@ -110,6 +126,10 @@ pub fn dispatch(j: &mut J<'_>, operation: &str, receiver: &O, args: &[O]) -> Res
             "EDT",
             "Lcom/intellij/openapi/actionSystem/ActionUpdateThread;",
         ),
+        "NewProjectAction.actionPerformed" => {
+            crate::wizard::create(j)?;
+            j.null()
+        }
         _ if class.ends_with("Action") => {
             if class == "DocsAction" {
                 crate::workspace::docs(j)?;

@@ -59,13 +59,7 @@ pub fn handle_message(
                         "Trust the project before starting tools"
                     );
                     if save_documents {
-                        let manager = j.static_obj(
-                            "com/intellij/openapi/fileEditor/FileDocumentManager",
-                            "getInstance",
-                            "()Lcom/intellij/openapi/fileEditor/FileDocumentManager;",
-                            &[],
-                        )?;
-                        j.void(&manager, "saveAllDocuments", "()V", &[])?;
+                        jvm::save_all_documents(j)?;
                     }
                     start_project(&project, expected_channel, worker)?;
                 }
