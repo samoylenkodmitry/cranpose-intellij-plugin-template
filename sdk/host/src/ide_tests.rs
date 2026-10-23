@@ -43,6 +43,7 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                     crate::surface::Surface::test_overlay_paint,
                 ),
                 ("persistent Cargo configuration", configuration),
+                ("first run configuration", initial_configuration),
                 ("native Cranpose rendering", native_ui),
                 ("native Studio menus", crate::popup::list_test),
                 ("preview UI reconnection", reconnect),
@@ -59,7 +60,9 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
             ] {
                 if (matches!(
                     name,
-                    "persistent Cargo configuration" | "preview UI reconnection"
+                    "persistent Cargo configuration"
+                        | "first run configuration"
+                        | "preview UI reconnection"
                 ) && !crate::features().cargo)
                     || (name == "inline stability badges" && !crate::features().stability)
                 {
@@ -72,23 +75,46 @@ pub fn dispatch(j: &mut J<'_>, operation: &str) -> Result<O> {
                 }
                 results.push(json!({"name":name,"passed":result.is_ok(),"error":result.err().map(|e|format!("{e:#}"))}));
             }
-            let passed = results.iter().all(|r| r["passed"] == true);
-            let report = json!({"passed":passed,"tests":results});
-            std::fs::write(
-                std::path::Path::new(&output).join("results.json"),
-                serde_json::to_vec_pretty(&report)?,
-            )?;
-            println!("CRANPOSE_IDE_TESTS {report}");
-            j.static_void(
-                "java/lang/System",
-                "exit",
-                "(I)V",
-                &[A::I(if passed { 0 } else { 1 })],
-            )?;
+            // Every test above runs inside this frame, which holds the write-intent
+            // lock. The last one needs the unlocked event of a panel's timer.
+            crate::jvm::on_timer_tick(j, move |j| {
+                let ticked = timer_tick(j);
+                results.push(json!({
+                    "name":"timer ticks hold the write-intent lock",
+                    "passed":ticked.is_ok(),
+                    "error":ticked.err().map(|e|format!("{e:#}")),
+                }));
+                finish(j, &output, &results)
+            })?;
             j.null()
         }
         _ => anyhow::bail!("Unknown self test: {operation}"),
     }
+}
+fn finish(j: &mut J<'_>, output: &str, results: &[serde_json::Value]) -> Result<()> {
+    let passed = results.iter().all(|r| r["passed"] == true);
+    let report = json!({"passed":passed,"tests":results});
+    std::fs::write(
+        std::path::Path::new(output).join("results.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    println!("CRANPOSE_IDE_TESTS {report}");
+    j.static_void(
+        "java/lang/System",
+        "exit",
+        "(I)V",
+        &[A::I(if passed { 0 } else { 1 })],
+    )
+}
+/// Document services assert the write-intent lock, which a plain Swing event
+/// does not hold in platform 2026.2. Dispatch must establish it.
+fn timer_tick(j: &mut J<'_>) -> Result<()> {
+    let app = j.application()?;
+    ensure!(
+        j.bool(&app, "isWriteIntentLockAcquired")?,
+        "A timer tick reached the host without the write-intent lock"
+    );
+    crate::jvm::save_all_documents(j)
 }
 fn property(j: &mut J<'_>, key: &str) -> Result<String> {
     let value = j.static_obj(
@@ -175,6 +201,88 @@ fn surface(j: &mut J<'_>) -> Result<()> {
     panel.close(j)?;
     panel.close(j)?;
     Ok(())
+}
+fn target(id: &str) -> crate::model::Target {
+    crate::model::Target {
+        package_name: format!("cranpose-{id}"),
+        name: format!("cranpose-{id}"),
+        kind: "bin".into(),
+        manifest: format!("/cranpose-test/{id}/Cargo.toml"),
+        source: "src/main.rs".into(),
+        features: vec![],
+        cranpose_dependency: Some("cranpose".into()),
+        id: id.into(),
+        label: format!("cranpose-{id}"),
+    }
+}
+fn initial_configuration(j: &mut J<'_>) -> Result<()> {
+    let p = project(j)?;
+    let manager = j.static_obj(
+        "com/intellij/execution/RunManager",
+        "getInstance",
+        "(Lcom/intellij/openapi/project/Project;)Lcom/intellij/execution/RunManager;",
+        &[A::O(&p.object)],
+    )?;
+    let all = |j: &mut J<'_>| -> Result<Vec<O>> {
+        let list = j.obj(&manager, "getAllSettings", "()Ljava/util/List;", &[])?;
+        let array = j.obj(&list, "toArray", "()[Ljava/lang/Object;", &[])?;
+        j.elements(&array)
+    };
+    for settings in all(j)? {
+        j.void(
+            &manager,
+            "removeConfiguration",
+            "(Lcom/intellij/execution/RunnerAndConfigurationSettings;)V",
+            &[A::O(&settings)],
+        )?;
+    }
+    let saved = p.snapshot.lock().expect("snapshot").clone();
+    {
+        let mut snapshot = p.snapshot.lock().expect("snapshot");
+        snapshot.targets = vec![target("first"), target("second")];
+        snapshot.selected = "first".into();
+    }
+    let result = (|| -> Result<()> {
+        run_configuration::ensure_initial(&p, j)?;
+        let created = all(j)?;
+        ensure!(
+            created.len() == 1,
+            "An empty project gets one configuration"
+        );
+        let selected = j.obj(
+            &manager,
+            "getSelectedConfiguration",
+            "()Lcom/intellij/execution/RunnerAndConfigurationSettings;",
+            &[],
+        )?;
+        let configuration = j.obj(
+            &selected,
+            "getConfiguration",
+            "()Lcom/intellij/execution/configurations/RunConfiguration;",
+            &[],
+        )?;
+        ensure!(
+            run_configuration::config(j, &configuration)?.target == "cranpose-first",
+            "The selected target is the one that runs"
+        );
+        p.snapshot.lock().expect("snapshot").selected = "second".into();
+        run_configuration::ensure_initial(&p, j)?;
+        ensure!(
+            all(j)?.len() == 1,
+            "A project with a configuration is left alone"
+        );
+        Ok(())
+    })();
+    for settings in all(j)? {
+        j.void(
+            &manager,
+            "removeConfiguration",
+            "(Lcom/intellij/execution/RunnerAndConfigurationSettings;)V",
+            &[A::O(&settings)],
+        )?;
+    }
+    *p.snapshot.lock().expect("snapshot") = saved;
+    result
 }
 fn configuration(j: &mut J<'_>) -> Result<()> {
     let p = project(j)?;

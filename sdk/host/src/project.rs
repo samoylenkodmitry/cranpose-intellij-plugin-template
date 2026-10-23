@@ -33,6 +33,8 @@ pub struct Project {
     pub preview_editors: Mutex<Vec<Weak<crate::workspace::PreviewEditor>>>,
     pub stability: Mutex<crate::stability::State>,
     pub closed: AtomicBool,
+    /// Set once the first discovered targets had their chance to create a run configuration.
+    configured: AtomicBool,
     timer: OnceLock<O>,
     metadata: Mutex<Option<mpsc::Receiver<Result<Snapshot, String>>>>,
     /// The result of moving the project to the newest Cranpose.
@@ -65,6 +67,7 @@ impl Project {
             preview_editors: Mutex::new(vec![]),
             stability: Mutex::new(crate::stability::State::default()),
             closed: AtomicBool::new(false),
+            configured: AtomicBool::new(false),
             timer: OnceLock::new(),
             metadata: Mutex::new(None),
             update: Mutex::new(None),
@@ -79,6 +82,7 @@ impl Project {
         });
         registry.push(project.clone());
         drop(registry);
+        crate::wizard::adopt(&project);
         let app = j.application()?;
         if j.bool(&app, "isDispatchThread")? {
             project.initialize(j)?;
@@ -229,8 +233,12 @@ impl Project {
                     ..Snapshot::default()
                 },
             };
+            let found = !snapshot.targets.is_empty();
             *self.snapshot.lock().expect("snapshot") = snapshot;
             self.publish();
+            if found && !self.configured.swap(true, Ordering::AcqRel) {
+                crate::run_configuration::ensure_initial(self, j)?;
+            }
         }
         let updated = self
             .update
@@ -445,13 +453,7 @@ impl Project {
         if self.snapshot.lock().expect("snapshot").busy {
             return Ok(());
         }
-        let manager = j.static_obj(
-            "com/intellij/openapi/fileEditor/FileDocumentManager",
-            "getInstance",
-            "()Lcom/intellij/openapi/fileEditor/FileDocumentManager;",
-            &[],
-        )?;
-        j.void(&manager, "saveAllDocuments", "()V", &[])?;
+        jvm::save_all_documents(j)?;
         let arguments = model::arguments(task, &target);
         let command = command(j, &self.root, &arguments, &BTreeMap::new())?;
         let handler = j.new(

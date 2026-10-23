@@ -103,6 +103,18 @@ pub fn build(
             jar.write_all(&fs::read(path)?)?;
         }
     }
+    // Optional descriptors that plugin.xml names in a `config-file` attribute.
+    for entry in fs::read_dir(resources.join("META-INF"))? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name != "plugin.xml" && path.extension().is_some_and(|e| e == "xml") {
+            jar.start_file(format!("META-INF/{name}"), options)?;
+            jar.write_all(&fs::read(&path)?)?;
+        }
+    }
     add_directory(&mut jar, &resources.join("icons"), &resources)?;
     jar.finish()?;
     let native = if let Some(native) = native_dir {

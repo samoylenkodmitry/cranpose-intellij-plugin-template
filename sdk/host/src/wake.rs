@@ -108,27 +108,11 @@ impl Drop for Wake {
 
 #[cfg(feature = "ide-tests")]
 pub fn integration_test(j: &mut J<'_>) -> Result<()> {
-    use crate::jvm::A;
     use anyhow::ensure;
     use std::sync::atomic::AtomicUsize;
-    let toolkit = j.static_obj(
-        "java/awt/Toolkit",
-        "getDefaultToolkit",
-        "()Ljava/awt/Toolkit;",
-        &[],
-    )?;
-    let queue = j.obj(
-        &toolkit,
-        "getSystemEventQueue",
-        "()Ljava/awt/EventQueue;",
-        &[],
-    )?;
-    let event_loop = j.obj(
-        &queue,
-        "createSecondaryLoop",
-        "()Ljava/awt/SecondaryLoop;",
-        &[],
-    )?;
+    // Stop the nested loop on failure as well, so CI does not wait forever.
+    let scope = jvm::Scope::default();
+    let (event_loop, timer) = jvm::bounded_loop(j, &scope, 5000)?;
     let count = Arc::new(AtomicUsize::new(0));
     let observed = count.clone();
     let completion = event_loop.clone();
@@ -142,20 +126,6 @@ pub fn integration_test(j: &mut J<'_>) -> Result<()> {
         j.bool(&completion, "exit")?;
         Ok(())
     })?;
-    // Stop the nested loop on failure as well, so CI does not wait forever.
-    let scope = jvm::Scope::default();
-    let timeout_loop = event_loop.clone();
-    let timeout = scope.register(move |j, _, _| {
-        j.bool(&timeout_loop, "exit")?;
-        j.null()
-    });
-    let timer_callback = jvm::callback(j, timeout)?;
-    let timer = j.new(
-        "javax/swing/Timer",
-        "(ILjava/awt/event/ActionListener;)V",
-        &[A::I(5000), A::O(&timer_callback)],
-    )?;
-    j.void(&timer, "setRepeats", "(Z)V", &[A::Z(false)])?;
     let result = (|| -> Result<()> {
         let queued = wake.clone();
         std::thread::spawn(move || -> Result<()> {

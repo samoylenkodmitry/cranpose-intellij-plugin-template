@@ -272,6 +272,44 @@ pub fn invoke(j: &mut J<'_>, id: i64, operation: &str, args: &[O]) -> Result<O> 
 pub fn callback(j: &mut J<'_>, id: i64) -> Result<O> {
     j.new("dev/cranpose/rust/Callback", "(J)V", &[A::J(id)])
 }
+/// Save every unsaved document. The IDE asserts the write-intent lock for it.
+pub fn save_all_documents(j: &mut J<'_>) -> Result<()> {
+    let manager = j.static_obj(
+        "com/intellij/openapi/fileEditor/FileDocumentManager",
+        "getInstance",
+        "()Lcom/intellij/openapi/fileEditor/FileDocumentManager;",
+        &[],
+    )?;
+    j.void(&manager, "saveAllDocuments", "()V", &[])
+}
+thread_local! {
+    static REPLAY: std::cell::RefCell<Option<O>> = const { std::cell::RefCell::new(None) };
+}
+/// Re-enter a Swing event under the IDE's write-intent lock.
+///
+/// Since platform 2026.2 a timer or listener event reaches the host without that
+/// lock, which document, run and project services assert. `WriteIntentReadAction`
+/// calls `Callback.run` on the same object while it holds the lock, and
+/// `take_replay` returns the event there. `None` means the lock is already held.
+pub fn replay_under_write_intent(j: &mut J<'_>, receiver: &O, event: &O) -> Result<Option<O>> {
+    let app = j.application()?;
+    if j.bool(&app, "isWriteIntentLockAcquired")? {
+        return Ok(None);
+    }
+    REPLAY.set(Some(event.clone()));
+    let ran = j.static_void(
+        "com/intellij/openapi/application/WriteIntentReadAction",
+        "run",
+        "(Ljava/lang/Runnable;)V",
+        &[A::O(receiver)],
+    );
+    REPLAY.take();
+    ran?;
+    Ok(Some(j.null()?))
+}
+pub fn take_replay() -> Option<O> {
+    REPLAY.take()
+}
 /// Every listener and native state handle belongs to a project/editor disposal scope.
 #[derive(Default)]
 pub struct Scope {
@@ -355,11 +393,9 @@ fn later_with_modality(
 }
 
 #[cfg(feature = "ide-tests")]
-pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
-    use std::sync::mpsc;
-    let project = crate::ide_tests::project(j)?;
-    let (worker_done, worker_result) = mpsc::sync_channel(1);
-    let (sent, received) = mpsc::sync_channel(1);
+/// A nested event loop that exits after `millis`. A self-test runs on the EDT, so it
+/// pumps this loop instead of blocking that thread while it waits for a posted event.
+pub(crate) fn bounded_loop(j: &mut J<'_>, scope: &Scope, millis: i32) -> Result<(O, O)> {
     let toolkit = j.static_obj(
         "java/awt/Toolkit",
         "getDefaultToolkit",
@@ -378,7 +414,57 @@ pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
         "()Ljava/awt/SecondaryLoop;",
         &[],
     )?;
+    let exit = event_loop.clone();
+    let timeout = scope.register(move |j, _, _| {
+        j.bool(&exit, "exit")?;
+        j.null()
+    });
+    let listener = callback(j, timeout)?;
+    let timer = j.new(
+        "javax/swing/Timer",
+        "(ILjava/awt/event/ActionListener;)V",
+        &[A::I(millis), A::O(&listener)],
+    )?;
+    j.void(&timer, "setRepeats", "(Z)V", &[A::Z(false)])?;
+    Ok((event_loop, timer))
+}
+
+/// Run `task` from a Swing timer event once the current frame has returned. A
+/// self-test frame holds the write-intent lock for everything nested in it, while
+/// this event comes from the top-level loop, as a panel tick does.
+#[cfg(feature = "ide-tests")]
+pub(crate) fn on_timer_tick(
+    j: &mut J<'_>,
+    task: impl FnOnce(&mut J<'_>) -> Result<()> + Send + 'static,
+) -> Result<()> {
+    let task = Mutex::new(Some(task));
+    let id = register(move |j, operation, _| {
+        if operation == "Callback.actionPerformed" {
+            let pending = task.lock().expect("timer task").take();
+            if let Some(task) = pending {
+                task(j)?;
+            }
+        }
+        j.null()
+    });
+    let listener = callback(j, id)?;
+    let timer = j.new(
+        "javax/swing/Timer",
+        "(ILjava/awt/event/ActionListener;)V",
+        &[A::I(1), A::O(&listener)],
+    )?;
+    j.void(&timer, "setRepeats", "(Z)V", &[A::Z(false)])?;
+    j.void(&timer, "start", "()V", &[])
+}
+
+#[cfg(feature = "ide-tests")]
+pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
+    use std::sync::mpsc;
+    let project = crate::ide_tests::project(j)?;
+    let (worker_done, worker_result) = mpsc::sync_channel(1);
+    let (sent, received) = mpsc::sync_channel(1);
     let scope = Scope::default();
+    let (event_loop, timer) = bounded_loop(j, &scope, 10000)?;
     let completion = event_loop.clone();
     let id = scope.register(move |j, _, _| {
         use crate::jobs::{Operation, handle_message};
@@ -419,13 +505,7 @@ pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
                     j.bool(&app, "isWriteIntentLockAcquired")?,
                     "Missing write intent"
                 );
-                let manager = j.static_obj(
-                    "com/intellij/openapi/fileEditor/FileDocumentManager",
-                    "getInstance",
-                    "()Lcom/intellij/openapi/fileEditor/FileDocumentManager;",
-                    &[],
-                )?;
-                j.void(&manager, "saveAllDocuments", "()V", &[])
+                save_all_documents(j)
             })();
             sent.send(result.map_err(|e| format!("{e:#}")))?;
             j.bool(&completion, "exit")?;
@@ -442,20 +522,6 @@ pub(crate) fn integration_test(j: &mut J<'_>) -> Result<()> {
         "(Ljava/lang/Runnable;)V",
         &[A::O(&runnable)],
     )?;
-    // SelfTest runs on the EDT. Pump a bounded secondary loop instead of
-    // blocking that same thread waiting for its deferred callback.
-    let timeout_loop = event_loop.clone();
-    let timeout = scope.register(move |j, _, _| {
-        j.bool(&timeout_loop, "exit")?;
-        j.null()
-    });
-    let timeout_callback = callback(j, timeout)?;
-    let timer = j.new(
-        "javax/swing/Timer",
-        "(ILjava/awt/event/ActionListener;)V",
-        &[A::I(10000), A::O(&timeout_callback)],
-    )?;
-    j.void(&timer, "setRepeats", "(Z)V", &[A::Z(false)])?;
     j.void(&timer, "start", "()V", &[])?;
     let result = (|| -> Result<()> {
         anyhow::ensure!(j.bool(&event_loop, "enter")?, "Event loop did not start");

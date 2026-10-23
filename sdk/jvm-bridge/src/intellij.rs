@@ -429,7 +429,7 @@ pub fn classes(plugin_id: &str) -> Vec<(String, Vec<u8>)> {
             ),
         ],
     );
-    for action in ["Refresh", "Check", "Run", "Preview", "Docs"] {
+    for action in ["Refresh", "Check", "Run", "Preview", "Docs", "NewProject"] {
         add(
             &format!("{action}Action"),
             "com/intellij/openapi/project/DumbAwareAction",
