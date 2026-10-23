@@ -1,6 +1,10 @@
-# Cranpose plugin template 0.10.3
+# Cranpose plugin template 0.10.4
 
-- New Project creates the Showcase 0.1.31 starter on Cranpose 0.17.1.
+- New Project creates the Showcase 0.1.32 starter on Cranpose 0.17.2.
+- The SDK and the plugin UI crates build on Cranpose 0.17.2.
+
+## Included since 0.10.3
+
 - The project snapshot reports the Cranpose the project resolves and the
   newest on crates.io, which `cargo search` finds through Cargo's own network
   settings. The `updateCranpose` action moves the workspace's Cranpose
