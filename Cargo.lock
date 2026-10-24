@@ -1059,7 +1059,7 @@ dependencies = [
  "cranpose-wgpu",
  "dispatch2",
  "jawt",
- "jni 0.21.1",
+ "jni 0.22.4",
  "libloading",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -1086,7 +1086,7 @@ dependencies = [
  "cranpose-plugin-process",
  "cranpose-plugin-toolchain",
  "ctrlc",
- "jni 0.21.1",
+ "jni 0.22.4",
  "rand 0.9.5",
  "regex",
  "serde",
@@ -1243,7 +1243,7 @@ version = "0.10.4"
 dependencies = [
  "anyhow",
  "cranpose-plugin-host",
- "jni 0.21.1",
+ "jni 0.22.4",
  "serde_json",
 ]
 
