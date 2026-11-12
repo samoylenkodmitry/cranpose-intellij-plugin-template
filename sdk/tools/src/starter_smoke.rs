@@ -46,7 +46,7 @@ pub fn run(options: Options) -> Result<()> {
             "framework_version": starter::SHOWCASE_FRAMEWORK_VERSION,
             "output": options.output,
             "generation_ms": elapsed.as_secs_f64() * 1000.0,
-            "manifest_sha256": format!("{:x}", Sha256::digest(manifest.as_bytes())),
+            "manifest_sha256": hex::encode(Sha256::digest(manifest.as_bytes())),
             "empty_path": std::env::var_os("PATH").is_none_or(|path| path.is_empty()),
         }))?
     );

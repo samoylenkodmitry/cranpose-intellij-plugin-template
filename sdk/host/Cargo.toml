@@ -23,6 +23,7 @@ rand = "0.10"
 regex = "1"
 tempfile = "3"
 sha2 = "0.11"
+hex = "0.4"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 toml_edit = "0.22"
 

@@ -1,4 +1,8 @@
-# Cranpose plugin template 0.10.5
+# Cranpose plugin template 0.10.6
+
+- The SDK builds on rand 0.10, sha2 0.11, syn 3 and zip 9.
+
+## Cranpose plugin template 0.10.5
 
 - New Project creates the Showcase 0.1.33 starter on Cranpose 0.22.4.
 - The SDK and the plugin UI crates build on Cranpose 0.22.4.

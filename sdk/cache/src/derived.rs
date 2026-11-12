@@ -35,7 +35,7 @@ impl DerivedFile {
             digest.update(value);
         }
         Ok(Self {
-            path: root.join(format!("{:x}.seed", digest.finalize())),
+            path: root.join(format!("{}.seed", hex::encode(digest.finalize()))),
         })
     }
     pub fn load(&self) -> Result<Option<Vec<u8>>> {

@@ -59,7 +59,7 @@ pub fn generate(root: &Path, cache: &Path, cancel: impl Fn() -> bool) -> Result<
     validate_destination(root)?;
     ensure!(!cancel(), "Project generation cancelled");
     ensure!(
-        format!("{:x}", Sha256::digest(SHOWCASE_ARCHIVE)) == SHOWCASE_SHA256,
+        hex::encode(Sha256::digest(SHOWCASE_ARCHIVE)) == SHOWCASE_SHA256,
         "Bundled Cranpose starter is corrupt; reinstall the plugin"
     );
     fs::create_dir_all(cache)?;
@@ -83,8 +83,8 @@ fn unpack(bytes: &[u8], destination: &Path, cancel: &impl Fn() -> bool) -> Resul
     for index in 0..archive.len() {
         ensure!(!cancel(), "Project generation cancelled");
         let mut entry = archive.by_index(index)?;
-        let name = entry
-            .name()
+        let full_name = entry.name()?.into_owned();
+        let name = full_name
             .strip_prefix(&prefix)
             .context("Unexpected starter root")?;
         if name.is_empty() && entry.is_dir() {
@@ -277,7 +277,13 @@ mod tests {
             if entry.is_dir() {
                 continue;
             }
-            let target = root.join(entry.name().strip_prefix(&prefix).expect("prefix"));
+            let target = root.join(
+                entry
+                    .name()
+                    .expect("name")
+                    .strip_prefix(&prefix)
+                    .expect("prefix"),
+            );
             let mut expected = Vec::new();
             std::io::Read::read_to_end(&mut entry, &mut expected).expect("read");
             assert_eq!(

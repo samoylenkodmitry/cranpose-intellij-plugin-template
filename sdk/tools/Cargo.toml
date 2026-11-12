@@ -18,6 +18,7 @@ cranpose-ide-host = { package = "cranpose-plugin-host", path = "../host" }
 rand = "0.10"
 semver = "1"
 sha2 = "0.11"
+hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "rustls-tls"] }
 tempfile = "3"
 toml_edit = "0.22"

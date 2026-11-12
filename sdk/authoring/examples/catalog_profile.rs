@@ -15,7 +15,7 @@ fn main() -> Result<()> {
     for (functions, unicode, single_line) in support::CASES {
         let source = support::fixture(functions, unicode, single_line);
         let expected = Catalog::parse(&source).context("warmup")?;
-        let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&expected)?));
+        let digest = hex::encode(Sha256::digest(serde_json::to_vec(&expected)?));
         let mut milliseconds = vec![];
         for _ in 0..samples {
             let start = Instant::now();

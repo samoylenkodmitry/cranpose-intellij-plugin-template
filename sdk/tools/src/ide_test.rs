@@ -73,7 +73,7 @@ pub fn run(ide: &Path, profile: bool) -> Result<()> {
     let mut output = zip::ZipWriter::new(fs::File::create(lib.join("test.jar"))?);
     for index in 0..input.len() {
         let mut entry = input.by_index(index)?;
-        let name = entry.name().to_owned();
+        let name = entry.name()?.into_owned();
         let mut bytes = vec![];
         entry.read_to_end(&mut bytes)?;
         if name == "META-INF/plugin.xml" {

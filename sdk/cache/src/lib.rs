@@ -53,7 +53,7 @@ pub fn materialize(root: &Path, files: &[(&str, &[u8])]) -> Result<PathBuf> {
     }
     fs::create_dir_all(root)?;
     let root = root.canonicalize()?;
-    let destination = root.join(format!("{:x}", hash.finalize()));
+    let destination = root.join(hex::encode(hash.finalize()));
     if destination.try_exists()? {
         verify(&destination, &entries)?;
         return Ok(destination);

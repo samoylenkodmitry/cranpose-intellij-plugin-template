@@ -319,8 +319,10 @@ pub fn check_zip(path: &Path, host_only: bool) -> Result<()> {
             "Missing {name}"
         );
     }
+    let names = jar.file_names().collect::<Result<Vec<_>, _>>()?;
     ensure!(
-        !jar.file_names()
+        !names
+            .iter()
             .any(|p| p.starts_with("kotlin/") || p.ends_with(".kotlin_module")),
         "Authored Kotlin remains in package"
     );
@@ -437,7 +439,7 @@ pub fn fetch_ide(product: &str, version: &str) -> Result<()> {
         hash.update(&buffer[..n]);
     }
     ensure!(
-        format!("{:x}", hash.finalize()) == expected,
+        hex::encode(hash.finalize()) == expected,
         "IDE download checksum mismatch"
     );
     let ide = crate::target_dir().join("vendor-tools").join(&name);
