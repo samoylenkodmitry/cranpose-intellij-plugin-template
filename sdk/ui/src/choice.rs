@@ -1,8 +1,9 @@
 //! A compact, searchable choice list with bounded composition.
 use crate::{controls::label_style, ide::Palette};
+use cranpose::prelude::Key;
 use cranpose::{
     BasicTextFieldOptions, BasicTextFieldWithOptions, Button, ButtonSpec, Column, ColumnSpec,
-    FocusRequester, KeyCode, LinearArrangement, Modifier, Row, RowSpec, Text, TextFieldLineLimits,
+    FocusRequester, LinearArrangement, Modifier, Row, RowSpec, Text, TextFieldLineLimits,
     TextFieldState, TextOptions, TextOverflow, TextWithOptions, UnhandledKeyEvents, composable,
     remember, rememberMutableStateOf,
 };
@@ -117,7 +118,7 @@ pub fn CompactChoice(
     }
     let escape_focus = trigger.clone();
     UnhandledKeyEvents(move |event| {
-        if event.is_key_down() && event.key_code == KeyCode::Escape {
+        if event.is_key_down() && event.key() == Key::Escape {
             expanded.set(false);
             let _ = escape_focus.request_focus();
             true

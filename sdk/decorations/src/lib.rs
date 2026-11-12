@@ -7,7 +7,7 @@ use cranpose_core::MutableState;
 pub use cranpose_plugin_authoring_ui::decorations::{CounterFrame, Frame, LightningFrame};
 use cranpose_plugin_gpu::Presentation;
 pub use cranpose_plugin_gpu::{Bounds, Target};
-use cranpose_render_wgpu::{WgpuRenderer, WgpuTextSystem};
+use cranpose_render_wgpu::{GpuTarget, WgpuRenderer, WgpuTextSystem};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -176,13 +176,12 @@ fn run(target: Target, mailbox: &Arc<Mailbox>) -> Result<()> {
     let mut renderer = WgpuRenderer::with_text_system(WgpuTextSystem::from_fonts(&[]));
     renderer.set_transparent_background(true);
     let mut bounds = target.bounds();
-    renderer.init_gpu(
+    renderer.init_gpu(GpuTarget::on_adapter(
+        &presentation.adapter,
         presentation.device.clone(),
         presentation.queue.clone(),
         presentation.format(),
-        presentation.adapter.get_info().backend,
-        presentation.adapter.get_downlevel_capabilities().flags,
-    );
+    ));
     let slot = Rc::new(RefCell::new(None));
     let root_slot = slot.clone();
     let [w, h] = bounds.pixels();
