@@ -13,8 +13,8 @@
 use std::time::Instant;
 
 use cranpose::{
-    Box, BoxSpec, Color, GraphicsLayer, LaunchedEffectAsync, Modifier, MutableState, Point,
-    composable, current_density, embed::HostOverlay, rememberHostMessages, rememberMutableStateOf,
+    Box, BoxSpec, Color, GraphicsLayer, LaunchedEffect, Modifier, MutableState, Point, composable,
+    current_density, embed::HostOverlay, rememberHostMessages, rememberMutableStateOf,
 };
 use cranpose_core::CollectEvents;
 use cranpose_ui_graphics::{CompositingStrategy, RenderEffect};
@@ -443,23 +443,21 @@ pub fn rememberEffects() -> EffectsState {
         spawned: rememberMutableStateOf(|| 0u32),
     };
     let animating = !state.effects.get().is_empty();
-    LaunchedEffectAsync(animating, move |scope| {
-        Box::pin(async move {
-            if !animating {
-                return;
+    LaunchedEffect(animating, move |scope| async move {
+        if !animating {
+            return;
+        }
+        let clock = scope.runtime().frame_clock();
+        while scope.is_active() {
+            clock.next_frame().await;
+            let frame_time = Instant::now();
+            state.now.set(frame_time);
+            let current = state.effects.get_non_reactive();
+            let still_alive = alive(&current, frame_time);
+            if still_alive.len() != current.len() {
+                state.effects.set(still_alive);
             }
-            let clock = scope.runtime().frame_clock();
-            while scope.is_active() {
-                clock.next_frame().await;
-                let frame_time = Instant::now();
-                state.now.set(frame_time);
-                let current = state.effects.get_non_reactive();
-                let still_alive = alive(&current, frame_time);
-                if still_alive.len() != current.len() {
-                    state.effects.set(still_alive);
-                }
-            }
-        })
+        }
     });
     state
 }

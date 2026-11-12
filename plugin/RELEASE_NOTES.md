@@ -1,4 +1,9 @@
-# Cranpose plugin template 0.10.4
+# Cranpose plugin template 0.10.5
+
+- New Project creates the Showcase 0.1.33 starter on Cranpose 0.22.4.
+- The SDK and the plugin UI crates build on Cranpose 0.22.4.
+
+## Cranpose plugin template 0.10.4
 
 - New Project creates the Showcase 0.1.32 starter on Cranpose 0.17.2.
 - The SDK and the plugin UI crates build on Cranpose 0.17.2.
