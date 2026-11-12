@@ -371,9 +371,12 @@ impl<'ast> Visit<'ast> for Resolver<'_> {
     }
     fn visit_arm(&mut self, arm: &'ast syn::Arm) {
         self.push();
-        self.bind(&arm.pat, None);
-        if let Some((_, guard)) = &arm.guard {
-            self.visit_expr(guard);
+        match &arm.pat {
+            syn::Pat::Guard(guarded) => {
+                self.bind(&guarded.pat, None);
+                self.visit_expr(&guarded.guard);
+            }
+            pattern => self.bind(pattern, None),
         }
         self.visit_expr(&arm.body);
         self.pop();

@@ -23,10 +23,9 @@ fn complete_catalogs_match_pre_index_baseline() {
         let catalog = Catalog::parse(&source).expect("catalog");
         // Covers the schema, every function/call/literal range in both encodings,
         // call ends, literal identity, value and type. Timing is not asserted.
-        let digest = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&catalog).expect("serialize"))
-        );
+        let digest = hex::encode(Sha256::digest(
+            serde_json::to_vec(&catalog).expect("serialize"),
+        ));
         assert_eq!(expected["catalogSha256"], digest);
     }
 }

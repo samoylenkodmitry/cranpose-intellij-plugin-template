@@ -119,7 +119,7 @@ impl Catalog {
         {
             digest.update((line as u64).to_le_bytes());
         }
-        let schema = format!("{:x}", digest.finalize());
+        let schema = hex::encode(digest.finalize());
         let (references, feedback_references) =
             references::resolve(source, &original, &walk.literals);
         Ok(Self {

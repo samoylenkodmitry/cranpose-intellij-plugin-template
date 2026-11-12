@@ -5,7 +5,7 @@ use cranpose_ide_host::{
     process,
     protocol::{self, Event, Packet},
 };
-use rand::RngCore;
+use rand::Rng;
 use serde_json::{Value, json};
 use std::{
     fs,

@@ -1,5 +1,5 @@
 //! A bounded private runner-to-preview channel. Blocking reads do no idle work.
-use rand::RngCore;
+use rand::Rng;
 use std::{
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},

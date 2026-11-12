@@ -112,7 +112,7 @@ fn hash(path: &Path) -> Result<String> {
         }
         hash.update(&buffer[..count]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 
 fn fetch_runtime(output: &Path) -> Result<()> {

@@ -1,7 +1,7 @@
 //! Authenticated loopback sessions. No JVM access occurs on worker threads.
 use crate::protocol::{self, Event, Packet};
 use anyhow::{Context, Result, ensure};
-use rand::RngCore;
+use rand::Rng;
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader},
